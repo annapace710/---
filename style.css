@@ -1,0 +1,139 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: linear-gradient(135deg, #fdf0f6 0%, #f3e8ff 100%);
+  color: #2d2a3a;
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 32px 20px;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.header h1 {
+  font-size: 1.8rem;
+  color: #6b2f7a;
+}
+
+.subtitle {
+  color: #7a6f8a;
+  margin-top: 8px;
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(107, 47, 122, 0.12);
+  padding: 28px;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+select,
+input[type="file"] {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #e3d7ea;
+  border-radius: 10px;
+  font-size: 1rem;
+  background: #faf8fc;
+}
+
+select:focus,
+input[type="file"]:focus {
+  outline: none;
+  border-color: #a86bc0;
+}
+
+.hint {
+  font-size: 0.85rem;
+  color: #9a8faa;
+  margin-top: 6px;
+}
+
+.validation-message {
+  color: #d64545;
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+  min-height: 1.2em;
+}
+
+button {
+  width: 100%;
+  padding: 14px;
+  background: linear-gradient(90deg, #8e44ad, #6b2f7a);
+  color: #ffffff;
+  border: none;
+  border-radius: 10px;
+  font-size: 1.05rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.result {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid #eee6f2;
+}
+
+.result h2 {
+  font-size: 1.2rem;
+  color: #6b2f7a;
+  margin-bottom: 12px;
+}
+
+#result-content {
+  line-height: 1.6;
+}
+
+#result-content ul {
+  padding-left: 20px;
+}
+
+.demo-note {
+  margin-top: 16px;
+  font-size: 0.8rem;
+  color: #a89bb5;
+  font-style: italic;
+}
+
+.footer {
+  text-align: center;
+  color: #a89bb5;
+  font-size: 0.8rem;
+  margin-top: 24px;
+}
+
+.hidden {
+  display: none;
+}

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Помощник художественной гимнастики</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>🤸‍♀️ Помощник художественной гимнастики</h1>
+      <p class="subtitle">Анализ видео упражнений и рекомендации по коррекции техники</p>
+    </header>
+
+    <main class="card">
+      <form id="analysis-form">
+        <div class="form-group">
+          <label for="exercise-select">Упражнение</label>
+          <select id="exercise-select" name="exercise" required>
+            <option value="risk-buhavy">Риск: ловля двух булав после кувырка под ними во время их полёта над кувырком</option>
+            <option value="jump">Прыжок с прогибом назад</option>
+            <option value="balance">Равновесие на одной ноге</option>
+            <option value="rotation">Поворот (пируэт)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="video-file">Видео выполнения упражнения</label>
+          <input
+            type="file"
+            id="video-file"
+            name="video"
+            accept="video/mp4,video/webm"
+          />
+          <p class="hint">Форматы: MP4, WebM. Максимальный размер — 50 МБ.</p>
+        </div>
+
+        <p id="validation-message" class="validation-message" role="alert"></p>
+
+        <button type="submit" id="analyze-btn">Проанализировать</button>
+      </form>
+
+      <section id="result" class="result hidden" aria-live="polite">
+        <h2>Рекомендации по технике</h2>
+        <div id="result-content"></div>
+        <p id="demo-note" class="demo-note"></p>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>MVP. Реальная интеграция с AI-сервисом YandexGPT будет добавлена позже.</p>
+    </footer>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
