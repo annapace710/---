@@ -121,3 +121,18 @@ form.addEventListener("submit", function (event) {
   const exercise = document.getElementById("exercise-select").value;
   renderRecommendations(exercise);
 });
+
+document.getElementById('videoForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    const formData = new FormData(this);
+    try {
+        // Отправляем запрос на наш локальный сервер
+        const response = await fetch('http://127.0.0.1:8000/upload', { method: 'POST', body: formData });
+        const data = await response.json();
+        
+        document.getElementById('result').innerText = JSON.stringify(data, null, 2);
+    } catch(err) {
+        console.error('Ошибка:', err);
+    }
+});
