@@ -161,6 +161,23 @@ button:disabled {
   color: #6b2f7a;
 }
 
+/* Блок углублённого анализа движения */
+.movement-block {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #eee6f2;
+}
+
+.movement-block h3 {
+  font-size: 1.05rem;
+  color: #6b2f7a;
+  margin: 16px 0 8px;
+}
+
+.movement-block h3:first-child {
+  margin-top: 0;
+}
+
 .error-message {
   color: #d64545;
   background: #fdf0f0;

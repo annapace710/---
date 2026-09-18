@@ -66,30 +66,79 @@ function formatPercent(value) {
   return `${Math.round((value || 0) * 100)}%`;
 }
 
+/** Создаёт HTML-карточку метрики. */
+function metricCard(label, value) {
+  return `
+    <div class="metric">
+      <span class="metric-label">${label}</span>
+      <span class="metric-value">${value}</span>
+    </div>`;
+}
+
 /** Формирует HTML с результатами анализа. */
 function renderAnalysis(data) {
   const analysis = data.analysis || {};
+  const movement = analysis.movement || {};
+  const torso = movement.torso_tilt || {};
+  const wrist = movement.wrist_height || {};
+  const trajectory = movement.trajectory || {};
+  const motion = movement.motion || {};
 
-  const items = [
-    { label: "Всего кадров", value: analysis.total_frames ?? "—" },
-    { label: "Частота кадров (FPS)", value: analysis.fps ?? "—" },
-    { label: "Проанализировано кадров", value: analysis.frames_analyzed ?? "—" },
-    { label: "Кадров с человеком", value: analysis.pose_detections ?? "—" },
-    { label: "Присутствие в кадре", value: formatPercent(analysis.pose_presence) },
-  ];
+  // Базовые метрики
+  const baseCards = [
+    metricCard("Всего кадров", analysis.total_frames ?? "—"),
+    metricCard("Частота кадров (FPS)", analysis.fps ?? "—"),
+    metricCard("Присутствие в кадре", formatPercent(analysis.pose_presence)),
+    metricCard("Кадров с человеком", analysis.pose_detections ?? "—"),
+  ].join("");
 
-  const rowsHtml = items
-    .map(
-      (item) => `
-      <div class="metric">
-        <span class="metric-label">${item.label}</span>
-        <span class="metric-value">${item.value}</span>
-      </div>`
-    )
-    .join("");
+  // Углублённые метрики движения
+  let movementHtml = "";
+
+  if (torso.avg_deg !== undefined) {
+    movementHtml += `<h3>🤸 Угол наклона корпуса (кувырок)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Средний", `${torso.avg_deg}°`)}
+        ${metricCard("Максимальный", `${torso.max_deg}°`)}
+        ${metricCard("Минимальный", `${torso.min_deg}°`)}
+      </div>`;
+  }
+
+  if (wrist.avg_y !== undefined) {
+    movementHtml += `<h3>🙌 Высота рук (подброс булав)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Средняя высота", wrist.avg_y)}
+        ${metricCard("Макс. высота", wrist.highest_y)}
+        ${metricCard("Досягаемость", formatPercent(wrist.reach_ratio))}
+      </div>`;
+  }
+
+  if (trajectory.total_distance !== undefined) {
+    movementHtml += `<h3>📈 Траектория движения</h3>
+      <div class="metrics-grid">
+        ${metricCard("Общий путь", trajectory.total_distance)}
+        ${metricCard("Размах X", trajectory.x_range)}
+        ${metricCard("Размах Y", trajectory.y_range)}
+      </div>`;
+  }
+
+  if (motion.avg_speed !== undefined) {
+    movementHtml += `<h3>⚡ Скорость и плавность</h3>
+      <div class="metrics-grid">
+        ${metricCard("Средняя скорость", motion.avg_speed)}
+        ${metricCard("Макс. скорость", motion.max_speed)}
+        ${metricCard("Плавность", motion.smoothness)}
+        ${metricCard("Рывков", motion.jerk_count)}
+      </div>`;
+  }
+
+  if (!movementHtml) {
+    movementHtml = `<p class="error-message">⚠️ Недостаточно данных о позе для углублённого анализа.</p>`;
+  }
 
   resultContent.innerHTML = `
-    <div class="metrics-grid">${rowsHtml}</div>
+    <div class="metrics-grid">${baseCards}</div>
+    <div class="movement-block">${movementHtml}</div>
   `;
 }
 
