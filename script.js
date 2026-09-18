@@ -1,20 +1,33 @@
-// Адрес API. Для локальной разработки — localhost.
-// При развёртывании замените на адрес реального бэкенда (например, туннель Colab или Yandex Cloud).
-const API_BASE_URL = "http://127.0.0.1:8000";
-
 // Параметры валидации загружаемого файла
 const VALID_FORMATS = ["video/mp4", "video/webm", "video/x-m4v"];
 const VALID_EXTENSIONS = [".mp4", ".webm", ".m4v"];
 const MAX_FILE_SIZE_MB = 50;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
+// Ключ для хранения адреса API в localStorage
+const API_URL_STORAGE_KEY = "gymnastics_api_url";
+const DEFAULT_API_URL = "http://127.0.0.1:8000";
+
 const form = document.getElementById("analysis-form");
+const apiUrlInput = document.getElementById("api-url");
 const fileInput = document.getElementById("video-file");
 const validationMessage = document.getElementById("validation-message");
 const analyzeBtn = document.getElementById("analyze-btn");
 const resultSection = document.getElementById("result");
 const resultContent = document.getElementById("result-content");
 const statusText = document.getElementById("status-text");
+
+// Восстанавливаем сохранённый адрес API при загрузке страницы
+const savedApiUrl = localStorage.getItem(API_URL_STORAGE_KEY);
+if (savedApiUrl) {
+  apiUrlInput.value = savedApiUrl;
+}
+
+/** Возвращает актуальный базовый URL API из поля ввода. */
+function getApiBaseUrl() {
+  const url = apiUrlInput.value.trim().replace(/\/+$/, "");
+  return url || DEFAULT_API_URL;
+}
 
 /**
  * Проверяет загруженный файл: наличие, формат и размер.
@@ -100,6 +113,10 @@ form.addEventListener("submit", async function (event) {
   }
 
   const exercise = document.getElementById("exercise-select").value;
+  const apiBaseUrl = getApiBaseUrl();
+
+  // Сохраняем адрес API для следующего визита
+  localStorage.setItem(API_URL_STORAGE_KEY, apiBaseUrl);
 
   // Готовим FormData с видео и выбранным упражнением
   const formData = new FormData();
@@ -113,7 +130,7 @@ form.addEventListener("submit", async function (event) {
   statusText.textContent = "⏳ Загружаем и анализируем видео…";
 
   try {
-    const response = await fetch(`${API_BASE_URL}/upload`, {
+    const response = await fetch(`${apiBaseUrl}/upload`, {
       method: "POST",
       body: formData,
     });
@@ -132,7 +149,7 @@ form.addEventListener("submit", async function (event) {
     }
   } catch (err) {
     console.error("Ошибка запроса:", err);
-    renderError("Не удалось подключиться к серверу анализа. Проверьте, что бэкенд запущен.");
+    renderError("Не удалось подключиться к серверу анализа. Проверьте адрес API и что бэкенд запущен.");
     statusText.textContent = "❌ Ошибка.";
   } finally {
     analyzeBtn.disabled = false;

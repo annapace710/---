@@ -14,6 +14,18 @@
     </header>
 
     <main class="card">
+      <div class="form-group">
+        <label for="api-url">Адрес API (бэкенд)</label>
+        <input
+          type="text"
+          id="api-url"
+          name="api-url"
+          value="http://127.0.0.1:8000"
+          placeholder="http://127.0.0.1:8000"
+        />
+        <p class="hint">Адрес сервера анализа: для локального запуска — http://127.0.0.1:8000, для Colab — публичный URL туннеля Cloudflare (https://...trycloudflare.com).</p>
+      </div>
+
       <form id="analysis-form">
         <div class="form-group">
           <label for="exercise-select">Упражнение</label>

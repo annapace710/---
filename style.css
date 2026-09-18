@@ -50,7 +50,8 @@ body {
 }
 
 select,
-input[type="file"] {
+input[type="file"],
+input[type="text"] {
   width: 100%;
   padding: 12px;
   border: 2px solid #e3d7ea;
@@ -60,9 +61,18 @@ input[type="file"] {
 }
 
 select:focus,
-input[type="file"]:focus {
+input[type="file"]:focus,
+input[type="text"]:focus {
   outline: none;
   border-color: #a86bc0;
+}
+
+/* Поле адреса API выделяем рамкой, чтобы было понятно, что это настройка */
+#api-url {
+  border-style: dashed;
+  border-color: #c9a8d8;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 0.9rem;
 }
 
 .hint {
