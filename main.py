@@ -9,7 +9,8 @@ import numpy as np
 
 app = FastAPI()
 
-# CORS: разрешаем обращения с фронтенда (SourceCraft Sites) и локальной разработки
+# CORS: разрешаем обращения с фронтенда (SourceCraft Sites), локальной разработки
+# и туннелей Google Colab (Cloudflare/ngrok)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -17,6 +18,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://127.0.0.1:8000",
     ],
+    allow_origin_regex=r"https?://(.*\.trycloudflare\.com|.*\.ngrok-free\.app|.*\.ngrok\.io)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
