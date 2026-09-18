@@ -7,7 +7,8 @@ import numpy as np
 
 app = FastAPI()
 
-"/upload"
+
+@app.post("/upload")
 async def upload_video(video_file: UploadFile = File(...)):
     # Здесь вы будете писать логику обработки видео
     return {"message": "Видео получено"}
