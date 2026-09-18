@@ -1,7 +1,7 @@
 import os
 import uuid
 import urllib.request
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import cv2  # OpenCV
 import mediapipe as mp
@@ -125,7 +125,10 @@ def analyze_video(video_path: str) -> dict:
 
 
 @app.post("/upload")
-async def upload_video(video_file: UploadFile = File(...)):
+async def upload_video(
+    video_file: UploadFile = File(...),
+    exercise: str = Form("unknown"),
+):
     filename = video_file.filename or "video.mp4"
 
     # 1. Валидация файла
@@ -145,7 +148,12 @@ async def upload_video(video_file: UploadFile = File(...)):
 
         # 3. Анализ видео
         analysis = analyze_video(save_path)
-        return {"message": "Видео получено", "file": unique_name, "analysis": analysis}
+        return {
+            "message": "Видео получено",
+            "file": unique_name,
+            "exercise": exercise,
+            "analysis": analysis,
+        }
     finally:
         # 4. Очистка временного файла после обработки
         if os.path.exists(save_path):

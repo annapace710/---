@@ -1,53 +1,12 @@
+// Адрес API. Для локальной разработки — localhost.
+// При развёртывании замените на адрес реального бэкенда (например, туннель Colab или Yandex Cloud).
+const API_BASE_URL = "http://127.0.0.1:8000";
+
 // Параметры валидации загружаемого файла
 const VALID_FORMATS = ["video/mp4", "video/webm", "video/x-m4v"];
 const VALID_EXTENSIONS = [".mp4", ".webm", ".m4v"];
 const MAX_FILE_SIZE_MB = 50;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
-
-// База демо-рекомендаций по упражнениям.
-// В реальной версии эти тексты будет формировать YandexGPT на основе переданного видео.
-const DEMO_RECOMMENDATIONS = {
-  "risk-buhavy": {
-    title: "Риск: ловля двух булав после кувырка под ними",
-    points: [
-      "Убедитесь, что обе булавы подброшены синхронно и на достаточную высоту для выполнения кувырка.",
-      "Держите корпус собранным при входе в кувырок — подбородок к груди, спина округлена.",
-      "Траектория полёта булав должна проходить ровно над телом гимнастки — избегайте смещения в стороны.",
-      "В момент выхода из кувырка сфокусируйтесь на визуальном контроле обеих булав перед ловлей.",
-      "Ловля выполняется мягко, с амортизацией движения руками, чтобы не сбить ритм упражнения."
-    ]
-  },
-  "jump": {
-    title: "Прыжок с прогибом назад",
-    points: [
-      "Отталкивайтесь полностью через стопу для максимальной высоты прыжка.",
-      "Колени сохраняйте вместе, стопы натянуты во время фазы полёта.",
-      "Прогиб назад выполняйте из грудного отдела, а не из поясницы, чтобы избежать травм.",
-      "Руки должны завершить движение в согласованной позиции для чистоты линий.",
-      "Приземляйтесь мягко, через носок, сохраняя равновесие."
-    ]
-  },
-  "balance": {
-    title: "Равновесие на одной ноге",
-    points: [
-      "Зафиксируйте взгляд на неподвижной точке перед собой для удержания баланса.",
-      "Следите за тем, чтобы опорная нога была полностью выпрямлена.",
-      "Поднятая нога должна образовывать точную геометрическую линию без отклонений.",
-      "Работайте над силой и стабильностью мышц корпуса.",
-      "Не допускайте дрожания и колебаний рук — они должны быть зафиксированы."
-    ]
-  },
-  "rotation": {
-    title: "Поворот (пируэт)",
-    points: [
-      "Начинайте поворот с мощного толчка, перенося вес на опорную ногу.",
-      "Держите ось вращения вертикальной — не наклоняйтесь вперёд или назад.",
-      "Голова поворачивается быстрее корпуса, используйте технику 'точек' для контроля.",
-      "Руки должны быть собраны и зафиксированы, чтобы не потерять ось.",
-      "Завершайте поворот в устойчивом положении, точно контролируя остановку."
-    ]
-  }
-};
 
 const form = document.getElementById("analysis-form");
 const fileInput = document.getElementById("video-file");
@@ -55,7 +14,7 @@ const validationMessage = document.getElementById("validation-message");
 const analyzeBtn = document.getElementById("analyze-btn");
 const resultSection = document.getElementById("result");
 const resultContent = document.getElementById("result-content");
-const demoNote = document.getElementById("demo-note");
+const statusText = document.getElementById("status-text");
 
 /**
  * Проверяет загруженный файл: наличие, формат и размер.
@@ -86,31 +45,47 @@ function validateFile(file) {
 function resetOutput() {
   resultSection.classList.add("hidden");
   resultContent.innerHTML = "";
-  demoNote.textContent = "";
+  statusText.textContent = "";
 }
 
-/** Формирует HTML-список рекомендаций для выбранного упражнения. */
-function renderRecommendations(exerciseKey) {
-  const data = DEMO_RECOMMENDATIONS[exerciseKey];
-  if (!data) {
-    return;
-  }
+/** Форматирует долю кадров с обнаруженной позой в проценты. */
+function formatPercent(value) {
+  return `${Math.round((value || 0) * 100)}%`;
+}
 
-  const listHtml = data.points
-    .map((point) => `<li>${point}</li>`)
+/** Формирует HTML с результатами анализа. */
+function renderAnalysis(data) {
+  const analysis = data.analysis || {};
+
+  const items = [
+    { label: "Всего кадров", value: analysis.total_frames ?? "—" },
+    { label: "Частота кадров (FPS)", value: analysis.fps ?? "—" },
+    { label: "Проанализировано кадров", value: analysis.frames_analyzed ?? "—" },
+    { label: "Кадров с человеком", value: analysis.pose_detections ?? "—" },
+    { label: "Присутствие в кадре", value: formatPercent(analysis.pose_presence) },
+  ];
+
+  const rowsHtml = items
+    .map(
+      (item) => `
+      <div class="metric">
+        <span class="metric-label">${item.label}</span>
+        <span class="metric-value">${item.value}</span>
+      </div>`
+    )
     .join("");
 
   resultContent.innerHTML = `
-    <h3>${data.title}</h3>
-    <ul>${listHtml}</ul>
+    <div class="metrics-grid">${rowsHtml}</div>
   `;
-  demoNote.textContent =
-    "Это демонстрационные рекомендации. Реальный анализ видео с помощью YandexGPT будет добавлен позже.";
-
-  resultSection.classList.remove("hidden");
 }
 
-form.addEventListener("submit", function (event) {
+/** Показывает сообщение об ошибке в блоке результата. */
+function renderError(message) {
+  resultContent.innerHTML = `<p class="error-message">⚠️ ${message}</p>`;
+}
+
+form.addEventListener("submit", async function (event) {
   event.preventDefault();
 
   resetOutput();
@@ -125,5 +100,42 @@ form.addEventListener("submit", function (event) {
   }
 
   const exercise = document.getElementById("exercise-select").value;
-  renderRecommendations(exercise);
+
+  // Готовим FormData с видео и выбранным упражнением
+  const formData = new FormData();
+  formData.append("video_file", file);
+  formData.append("exercise", exercise);
+
+  // Блокируем кнопку на время запроса
+  analyzeBtn.disabled = true;
+  analyzeBtn.textContent = "Анализ…";
+  resultSection.classList.remove("hidden");
+  statusText.textContent = "⏳ Загружаем и анализируем видео…";
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/upload`, {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.detail || data.error || `Ошибка сервера (${response.status})`);
+    }
+
+    if (data.error) {
+      renderError(data.error);
+    } else {
+      renderAnalysis(data);
+      statusText.textContent = "✅ Анализ завершён.";
+    }
+  } catch (err) {
+    console.error("Ошибка запроса:", err);
+    renderError("Не удалось подключиться к серверу анализа. Проверьте, что бэкенд запущен.");
+    statusText.textContent = "❌ Ошибка.";
+  } finally {
+    analyzeBtn.disabled = false;
+    analyzeBtn.textContent = "Проанализировать";
+  }
 });
