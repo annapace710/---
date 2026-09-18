@@ -55,7 +55,7 @@ curl -X POST http://127.0.0.1:8000/upload \
 
 ```json
 {
-  "error": "Недопустимый формат файла: .txt. Поддерживаются: .avi, .mkv, .mov, .mp4, .webm"
+  "error": "Недопустимый формат файла: .txt. Поддерживаются: .avi, .m4v, .mkv, .mov, .mp4, .webm"
 }
 ```
 
@@ -67,6 +67,10 @@ curl -X POST http://127.0.0.1:8000/upload
 
 Ответ — ошибка `422 Unprocessable Entity` от FastAPI.
 
+## 🎬 Поддерживаемые форматы
+
+MP4, WebM, M4V, AVI, MOV, MKV. Максимальный размер файла — 50 МБ.
+
 ## 🔌 CORS
 
 Фронтенд может обращаться к API со следующих источников:
@@ -74,3 +78,5 @@ curl -X POST http://127.0.0.1:8000/upload
 - `https://annapace.sourcecraft.site`
 - `http://localhost:8000`
 - `http://127.0.0.1:8000`
+
+Также разрешены обращения с туннелей Google Colab (Cloudflare/ngrok).

@@ -1,5 +1,6 @@
 // Параметры валидации загружаемого файла
-const VALID_FORMATS = ["video/mp4", "video/webm"];
+const VALID_FORMATS = ["video/mp4", "video/webm", "video/x-m4v"];
+const VALID_EXTENSIONS = [".mp4", ".webm", ".m4v"];
 const MAX_FILE_SIZE_MB = 50;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
@@ -58,6 +59,7 @@ const demoNote = document.getElementById("demo-note");
 
 /**
  * Проверяет загруженный файл: наличие, формат и размер.
+ * Формат проверяется и по MIME-типу, и по расширению (для M4V MIME может быть разным).
  * Возвращает сообщение об ошибке или пустую строку при успехе.
  */
 function validateFile(file) {
@@ -65,8 +67,12 @@ function validateFile(file) {
     return "Пожалуйста, загрузите видеофайл.";
   }
 
-  if (!VALID_FORMATS.includes(file.type)) {
-    return "Недопустимый формат файла. Поддерживаются только MP4 и WebM.";
+  const fileName = (file.name || "").toLowerCase();
+  const hasValidMime = VALID_FORMATS.includes(file.type);
+  const hasValidExtension = VALID_EXTENSIONS.some((ext) => fileName.endsWith(ext));
+
+  if (!hasValidMime && !hasValidExtension) {
+    return "Недопустимый формат файла. Поддерживаются только MP4, WebM и M4V.";
   }
 
   if (file.size > MAX_FILE_SIZE_BYTES) {
@@ -120,19 +126,4 @@ form.addEventListener("submit", function (event) {
 
   const exercise = document.getElementById("exercise-select").value;
   renderRecommendations(exercise);
-});
-
-document.getElementById('videoForm').addEventListener('submit', async function(e) {
-    e.preventDefault();
-    
-    const formData = new FormData(this);
-    try {
-        // Отправляем запрос на наш локальный сервер
-        const response = await fetch('http://127.0.0.1:8000/upload', { method: 'POST', body: formData });
-        const data = await response.json();
-        
-        document.getElementById('result').innerText = JSON.stringify(data, null, 2);
-    } catch(err) {
-        console.error('Ошибка:', err);
-    }
 });

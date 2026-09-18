@@ -20,6 +20,14 @@ class TestValidateVideoFile(unittest.TestCase):
         """Валидный WebM-файл не должен вызывать ошибку."""
         validate_video_file("video.webm", 1024)
 
+    def test_valid_m4v(self):
+        """Валидный M4V-файл не должен вызывать ошибку."""
+        validate_video_file("video.m4v", 1024)
+
+    def test_valid_uppercase_extension(self):
+        """Расширение в верхнем регистре (.MP4) должно быть принято."""
+        validate_video_file("video.MP4", 1024)
+
     def test_invalid_extension(self):
         """Файл с недопустимым расширением должен вызывать ValueError."""
         with self.assertRaises(ValueError) as ctx:
