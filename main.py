@@ -1,12 +1,26 @@
 import os
 import uuid
 from fastapi import FastAPI, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from typing import List
 import cv2  # OpenCV
 import mediapipe as mp  # MediaPipe
 import numpy as np
 
 app = FastAPI()
+
+# CORS: разрешаем обращения с фронтенда (SourceCraft Sites) и локальной разработки
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://annapace.sourcecraft.site",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Директория для временного хранения загруженных видео
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads", "temp")

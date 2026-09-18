@@ -1,3 +1,76 @@
 # rhythmic-gymnastics-assistant
 
 Веб-приложение для анализа видео упражнений художественной гимнастики и выдачи рекомендаций по коррекции техники (риски с булавами)
+
+## 📁 Структура проекта
+
+- `index.html`, `style.css`, `script.js` — фронтенд (статический сайт)
+- `main.py` — бэкенд на FastAPI (загрузка видео, анализ позы через MediaPipe)
+- `requirements.txt` — зависимости Python
+- `uploads/temp/` — временная директория для загруженных видео
+
+## 🚀 Запуск бэкенда локально
+
+```bash
+pip install -r requirements.txt
+uvicorn main:app --reload
+```
+
+API будет доступен по адресу `http://127.0.0.1:8000`.
+Интерактивная документация (Swagger UI): `http://127.0.0.1:8000/docs`.
+
+## 📝 Примеры curl-команд
+
+### Загрузка видео (успешный сценарий)
+
+```bash
+curl -X POST http://127.0.0.1:8000/upload \
+  -F "video_file=@/path/to/video.mp4"
+```
+
+Пример ответа:
+
+```json
+{
+  "message": "Видео получено",
+  "file": "a1b2c3d4e5_video.mp4",
+  "analysis": {
+    "total_frames": 150,
+    "fps": 30.0,
+    "frames_analyzed": 75,
+    "pose_detections": 72,
+    "pose_presence": 0.96
+  }
+}
+```
+
+### Загрузка с недопустимым форматом (ошибка валидации)
+
+```bash
+curl -X POST http://127.0.0.1:8000/upload \
+  -F "video_file=@/path/to/file.txt"
+```
+
+Ответ:
+
+```json
+{
+  "error": "Недопустимый формат файла: .txt. Поддерживаются: .avi, .mkv, .mov, .mp4, .webm"
+}
+```
+
+### Загрузка без файла (ошибка)
+
+```bash
+curl -X POST http://127.0.0.1:8000/upload
+```
+
+Ответ — ошибка `422 Unprocessable Entity` от FastAPI.
+
+## 🔌 CORS
+
+Фронтенд может обращаться к API со следующих источников:
+
+- `https://annapace.sourcecraft.site`
+- `http://localhost:8000`
+- `http://127.0.0.1:8000`
