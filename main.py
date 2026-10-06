@@ -207,11 +207,297 @@ def compute_deep_metrics(
     return result
 
 
-def analyze_video(video_path: str) -> dict:
+# --- Детекция ошибок и генерация рекомендаций ---
+
+# Эвристические пороги для оценки техники упражнений.
+# Значения подобраны на основе типовых ошибок начинающих гимнасток
+# и будут уточняться по мере накопления данных.
+THRESHOLDS = {
+    "risk-buhavy": {
+        "min_tuck_tilt_deg": 60.0,   # минимальный макс. угол наклона при кувырке
+        "min_reach_ratio": 0.30,     # минимальная высота подброса булав (0..1)
+        "max_jerk_count": 15,        # допустимое число рывков при ловле
+    },
+    "jump": {
+        "min_jump_y_range": 0.15,    # минимальный вертикальный размах центра масс
+        "min_backbend_tilt_deg": 35.0,  # минимальный макс. наклон корпуса при прогибе
+        "max_jerk_count": 15,        # допустимое число рывков при приземлении
+    },
+    "balance": {
+        "max_com_x_range": 0.10,     # допустимый горизонтальный дрейф центра масс
+        "max_avg_tilt_deg": 10.0,    # допустимый средний наклон корпуса
+    },
+    "rotation": {
+        "max_avg_tilt_deg": 12.0,    # допустимый средний наклон оси вращения
+        "max_com_x_range": 0.12,     # допустимое смещение оси вращения
+        "max_jerk_count": 20,        # допустимое число рывков при вращении
+    },
+}
+
+# Штрафы за ошибки (используются для расчёта общей оценки)
+SEVERITY_PENALTY = {
+    "critical": 25,
+    "warning": 10,
+}
+
+
+def _fmt(value, suffix=""):
+    """Форматирует число для текста рекомендации."""
+    if value is None:
+        return "—"
+    return f"{value}{suffix}"
+
+
+def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
+    """
+    Детектирует ошибки техники и формирует рекомендации для конкретного
+    упражнения на основе агрегированных метрик движения.
+
+    Возвращает:
+    {
+        "overall_score": 0..100,
+        "errors": [{"severity": "critical"|"warning", "message": "..."}],
+        "recommendations": ["..."],
+        "summary": "..."
+    }
+    """
+    errors = []
+    recommendations = []
+
+    if exercise not in THRESHOLDS:
+        return {
+            "overall_score": None,
+            "errors": [],
+            "recommendations": [
+                "Упражнение не распознано. Выберите упражнение из списка и повторите анализ."
+            ],
+            "summary": "Не удалось подобрать правила проверки для выбранного упражнения.",
+        }
+
+    thresholds = THRESHOLDS[exercise]
+
+    torso = movement.get("torso_tilt") or {}
+    wrist = movement.get("wrist_height") or {}
+    trajectory = movement.get("trajectory") or {}
+    motion = movement.get("motion") or {}
+
+    # Если поза почти не была обнаружена — данных для проверки недостаточно
+    if not torso and not wrist and not trajectory:
+        return {
+            "overall_score": None,
+            "errors": [
+                {"severity": "critical", "message": "Недостаточно данных о позе: человек не был стабильно обнаружен в кадре."}
+            ],
+            "recommendations": [
+                "Снимите видео при хорошем освещении, в полный рост, без перекрытий.",
+                "Убедитесь, что тело целиком попадает в кадр на протяжении всего упражнения.",
+            ],
+            "summary": "Анализ невозможен из-за отсутствия данных о позе.",
+        }
+
+    # --- Риск: ловля двух булав после кувырка ---
+    if exercise == "risk-buhavy":
+        max_tilt = torso.get("max_deg")
+        if max_tilt is not None and max_tilt < thresholds["min_tuck_tilt_deg"]:
+            errors.append({
+                "severity": "critical",
+                "message": (
+                    f"Кувырок выполнен недостаточно глубоко: максимальный наклон корпуса "
+                    f"{_fmt(max_tilt, '°')} (нужно не менее {thresholds['min_tuck_tilt_deg']:.0f}°). "
+                    "Булавы не успеют перелететь над кувырком."
+                ),
+            })
+            recommendations.append(
+                "Сильнее группируйтесь и активнее перекатывайтесь через плечо, чтобы корпус "
+                "проходил под траекторией полёта булав."
+            )
+
+        reach_ratio = wrist.get("reach_ratio")
+        if reach_ratio is not None and reach_ratio < thresholds["min_reach_ratio"]:
+            errors.append({
+                "severity": "critical",
+                "message": (
+                    f"Подброс булав недостаточно высокий: руки поднялись лишь на "
+                    f"{_fmt(round(reach_ratio * 100), '%')} высоты кадра "
+                    f"(нужно не менее {thresholds['min_reach_ratio'] * 100:.0f}%)."
+                ),
+            })
+            recommendations.append(
+                "Подбрасывайте булавы энергичным движением от плеча, направляя их вверх, "
+                "и добавляйте небольшой подъём на носки для увеличения высоты полёта."
+            )
+
+        jerk_count = motion.get("jerk_count")
+        if jerk_count is not None and jerk_count > thresholds["max_jerk_count"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Ловля булав жёсткая: зафиксировано {jerk_count} рывков "
+                    f"(допустимо не более {thresholds['max_jerk_count']})."
+                ),
+            })
+            recommendations.append(
+                "Встречайте булавы мягким движением кистей и амортизируйте ловлю "
+                "сгибанием рук в локтях."
+            )
+
+    # --- Прыжок с прогибом назад ---
+    elif exercise == "jump":
+        y_range = trajectory.get("y_range")
+        if y_range is not None and y_range < thresholds["min_jump_y_range"]:
+            errors.append({
+                "severity": "critical",
+                "message": (
+                    f"Прыжок слишком низкий: вертикальный размах центра масс "
+                    f"{_fmt(y_range)} (нужно не менее {thresholds['min_jump_y_range']}). "
+                    "Прогиб не успевает раскрыться в полёте."
+                ),
+            })
+            recommendations.append(
+                "Отталкивайтесь активнее обеими ногами и вытягивайтесь вверх перед прогибом, "
+                "чтобы увеличить время полёта."
+            )
+
+        max_tilt = torso.get("max_deg")
+        if max_tilt is not None and max_tilt < thresholds["min_backbend_tilt_deg"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Недостаточный прогиб назад: максимальный наклон корпуса "
+                    f"{_fmt(max_tilt, '°')} (нужно не менее {thresholds['min_backbend_tilt_deg']:.0f}°)."
+                ),
+            })
+            recommendations.append(
+                "В верхней точке прыжка активнее прогибайтесь в грудном отделе и тяните "
+                "руки назад, раскрывая плечи."
+            )
+
+        jerk_count = motion.get("jerk_count")
+        if jerk_count is not None and jerk_count > thresholds["max_jerk_count"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Приземление жёсткое: зафиксировано {jerk_count} рывков "
+                    f"(допустимо не более {thresholds['max_jerk_count']})."
+                ),
+            })
+            recommendations.append(
+                "Приземляйтесь мягко: с носка на полную стопу, слегка сгибая колени "
+                "и сохраняя баланс."
+            )
+
+    # --- Равновесие на одной ноге ---
+    elif exercise == "balance":
+        x_range = trajectory.get("x_range")
+        if x_range is not None and x_range > thresholds["max_com_x_range"]:
+            errors.append({
+                "severity": "critical",
+                "message": (
+                    f"Раскачивание корпуса: центр масс смещается по горизонтали на "
+                    f"{_fmt(x_range)} (допустимо не более {thresholds['max_com_x_range']}). "
+                    "Равновесие теряется."
+                ),
+            })
+            recommendations.append(
+                "Зафиксируйте взгляд в одной точке, напрягите мышцы пресса и удерживайте "
+                "опорную ногу неподвижной."
+            )
+
+        avg_tilt = torso.get("avg_deg")
+        if avg_tilt is not None and avg_tilt > thresholds["max_avg_tilt_deg"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Корпус наклонён: средний наклон {_fmt(avg_tilt, '°')} "
+                    f"(допустимо не более {thresholds['max_avg_tilt_deg']:.0f}°). "
+                    "Поза выглядит неустойчивой."
+                ),
+            })
+            recommendations.append(
+                "Держите спину вертикально, подтяните живот и не опускайте плечи."
+            )
+
+    # --- Поворот (пируэт) ---
+    elif exercise == "rotation":
+        avg_tilt = torso.get("avg_deg")
+        if avg_tilt is not None and avg_tilt > thresholds["max_avg_tilt_deg"]:
+            errors.append({
+                "severity": "critical",
+                "message": (
+                    f"Ось вращения завалена: средний наклон корпуса {_fmt(avg_tilt, '°')} "
+                    f"(допустимо не более {thresholds['max_avg_tilt_deg']:.0f}°). "
+                    "Вращение получается неустойчивым."
+                ),
+            })
+            recommendations.append(
+                "Держите ось вращения строго вертикальной: тянитесь макушкой вверх "
+                "и держите корпус собранным."
+            )
+
+        x_range = trajectory.get("x_range")
+        if x_range is not None and x_range > thresholds["max_com_x_range"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Центр масс смещается по горизонтали на {_fmt(x_range)} "
+                    f"(допустимо не более {thresholds['max_com_x_range']}). "
+                    "Теряется ось вращения."
+                ),
+            })
+            recommendations.append(
+                "Перед началом поворота перенесите вес точно на опорную ногу "
+                "и сохраняйте проекцию центра масс над стопой."
+            )
+
+        jerk_count = motion.get("jerk_count")
+        if jerk_count is not None and jerk_count > thresholds["max_jerk_count"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Вращение неравномерное: зафиксировано {jerk_count} рывков "
+                    f"(допустимо не более {thresholds['max_jerk_count']})."
+                ),
+            })
+            recommendations.append(
+                "Работайте руками равномерно, не «замирайте» между витками — "
+                "вращение должно быть непрерывным."
+            )
+
+    # --- Общая оценка и итоговая рекомендация ---
+    if not errors:
+        overall_score = 100
+        summary = "Отличная техника! Ошибок не обнаружено, продолжайте в том же духе."
+        recommendations.insert(
+            0,
+            "Отличная техника! Для закрепления результата повторите упражнение "
+            "в медленном темпе и под контролем тренера.",
+        )
+    else:
+        overall_score = max(
+            0,
+            100 - sum(SEVERITY_PENALTY[e["severity"]] for e in errors),
+        )
+        if overall_score >= 80:
+            summary = "Техника близка к идеалу: есть небольшие недочёты, которые легко исправить."
+        elif overall_score >= 50:
+            summary = "Упражнение выполняется, но есть заметные ошибки — обратите внимание на рекомендации."
+        else:
+            summary = "Техника требует серьёзной доработки. Разберите упражнение по элементам с тренером."
+
+    return {
+        "overall_score": overall_score,
+        "errors": errors,
+        "recommendations": recommendations,
+        "summary": summary,
+    }
+
+
+def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
     """
     Анализирует видео с помощью MediaPipe PoseLandmarker (Tasks API):
-    определяет наличие человека, собирает статистику и вычисляет
-    метрики углублённого анализа движений.
+    определяет наличие человека, собирает статистику, вычисляет
+    метрики углублённого анализа движений и формирует
+    рекомендации по технике для выбранного упражнения.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -267,6 +553,9 @@ def analyze_video(video_path: str) -> dict:
 
     movement = compute_deep_metrics(torso_angles, wrist_heights, com_positions, fps)
 
+    # Детекция ошибок и генерация рекомендаций для выбранного упражнения
+    feedback = detect_errors_and_recommendations(exercise, movement)
+
     return {
         "total_frames": total_frames,
         "fps": round(fps, 2),
@@ -274,6 +563,7 @@ def analyze_video(video_path: str) -> dict:
         "pose_detections": pose_detections,
         "pose_presence": round(pose_detections / max(frames_analyzed, 1), 3),
         "movement": movement,
+        "feedback": feedback,
     }
 
 
@@ -300,7 +590,7 @@ async def upload_video(
                 buffer.write(chunk)
 
         # 3. Анализ видео
-        analysis = analyze_video(save_path)
+        analysis = analyze_video(save_path, exercise)
         return {
             "message": "Видео получено",
             "file": unique_name,

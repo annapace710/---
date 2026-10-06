@@ -186,6 +186,117 @@ button:disabled {
   padding: 12px;
 }
 
+/* Блок оценки техники, ошибок и рекомендаций */
+.feedback-block {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #eee6f2;
+}
+
+.feedback-block h3 {
+  font-size: 1.05rem;
+  color: #6b2f7a;
+  margin: 16px 0 8px;
+}
+
+.score-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 8px 0 16px;
+}
+
+.score-box {
+  text-align: center;
+  min-width: 84px;
+  padding: 10px;
+  background: linear-gradient(135deg, #8e44ad, #6b2f7a);
+  border-radius: 12px;
+  color: #ffffff;
+}
+
+.score-value {
+  font-size: 1.8rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.score-value.score-na {
+  font-size: 1.4rem;
+  opacity: 0.8;
+}
+
+.score-label {
+  font-size: 0.75rem;
+  opacity: 0.85;
+  margin-top: 2px;
+}
+
+.score-summary {
+  font-size: 0.95rem;
+  color: #4a3f5c;
+}
+
+.error-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.error-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 8px;
+}
+
+.error-critical {
+  background: #fdf0f0;
+  border: 1px solid #f5c6c6;
+}
+
+.error-warning {
+  background: #fff8e8;
+  border: 1px solid #f2dfa8;
+}
+
+.error-severity {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #d64545;
+}
+
+.error-warning .error-severity {
+  color: #b8860b;
+}
+
+.error-text {
+  font-size: 0.95rem;
+  color: #2d2a3a;
+}
+
+.recommendation-list {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.recommendation-list li {
+  margin-bottom: 8px;
+  font-size: 0.95rem;
+  color: #4a3f5c;
+}
+
+.feedback-success {
+  background: #eefaf1;
+  border: 1px solid #b9e4c4;
+  border-radius: 10px;
+  padding: 12px;
+  color: #2e7d4f;
+  font-weight: 600;
+}
+
 .footer {
   text-align: center;
   color: #a89bb5;

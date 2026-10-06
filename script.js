@@ -75,9 +75,45 @@ function metricCard(label, value) {
     </div>`;
 }
 
+/** Создаёт HTML-блок найденных ошибок техники. */
+function renderErrors(errors) {
+  if (!errors || errors.length === 0) {
+    return `
+      <div class="feedback-success">
+        ✅ Ошибок не обнаружено. Отличная техника!
+      </div>`;
+  }
+
+  const items = errors.map((err) => {
+    const severityLabel = err.severity === "critical" ? "🔴 Критично" : "🟡 Замечание";
+    return `
+      <li class="error-item error-${err.severity}">
+        <span class="error-severity">${severityLabel}</span>
+        <span class="error-text">${err.message}</span>
+      </li>`;
+  }).join("");
+
+  return `<ul class="error-list">${items}</ul>`;
+}
+
+/** Создаёт HTML-блок рекомендаций по технике. */
+function renderRecommendations(recommendations) {
+  if (!recommendations || recommendations.length === 0) {
+    return "";
+  }
+
+  const items = recommendations.map((rec) => `<li>${rec}</li>`).join("");
+  return `
+    <div class="feedback-block">
+      <h3>💡 Рекомендации</h3>
+      <ul class="recommendation-list">${items}</ul>
+    </div>`;
+}
+
 /** Формирует HTML с результатами анализа. */
 function renderAnalysis(data) {
   const analysis = data.analysis || {};
+  const feedback = analysis.feedback || {};
   const movement = analysis.movement || {};
   const torso = movement.torso_tilt || {};
   const wrist = movement.wrist_height || {};
@@ -136,9 +172,29 @@ function renderAnalysis(data) {
     movementHtml = `<p class="error-message">⚠️ Недостаточно данных о позе для углублённого анализа.</p>`;
   }
 
+  // Блок «Ошибки и рекомендации» (ядро продукта)
+  let feedbackHtml = "";
+  if (feedback.summary || feedback.errors || feedback.recommendations) {
+    const scoreHtml =
+      feedback.overall_score != null
+        ? `<div class="score-value">${feedback.overall_score}</div>`
+        : `<div class="score-value score-na">—</div>`;
+    feedbackHtml = `
+      <div class="feedback-block">
+        <h3>📋 Оценка техники</h3>
+        <div class="score-row">
+          <div class="score-box">${scoreHtml}<div class="score-label">Баллы</div></div>
+          <div class="score-summary">${feedback.summary || ""}</div>
+        </div>
+        ${renderErrors(feedback.errors)}
+      </div>
+      ${renderRecommendations(feedback.recommendations)}`;
+  }
+
   resultContent.innerHTML = `
     <div class="metrics-grid">${baseCards}</div>
     <div class="movement-block">${movementHtml}</div>
+    ${feedbackHtml}
   `;
 }
 
