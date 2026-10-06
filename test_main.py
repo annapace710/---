@@ -5,7 +5,15 @@ import unittest
 # Добавляем корень проекта в путь, чтобы импортировать main
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from main import validate_video_file, MAX_FILE_SIZE_BYTES, detect_errors_and_recommendations
+from main import (
+    validate_video_file,
+    MAX_FILE_SIZE_BYTES,
+    detect_errors_and_recommendations,
+    compute_knee_angle,
+    compute_leg_opening_angle,
+    compute_hip_height,
+    compute_torso_tilt_signed,
+)
 
 
 class TestValidateVideoFile(unittest.TestCase):
@@ -132,6 +140,117 @@ class TestDetectErrorsAndRecommendations(unittest.TestCase):
         self.assertIsNone(result["overall_score"])
         self.assertTrue(result["errors"])
         self.assertEqual(result["errors"][0]["severity"], "critical")
+
+    def test_poor_grouping_risk_buhavy(self):
+        """Недостаточная группировка (таз недостаточно низко) должна определяться как ошибка."""
+        movement = self._movement(hip_height={"min_y": 0.2, "max_y": 0.4, "avg_y": 0.3})
+        result = detect_errors_and_recommendations("risk-buhavy", movement)
+        self.assertTrue(any("группировк" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_narrow_legs_jump(self):
+        """Недостаточное раскрытие ног в прыжке должно определяться как ошибка."""
+        movement = self._movement(leg_opening={"max_deg": 60.0, "avg_deg": 40.0})
+        result = detect_errors_and_recommendations("jump", movement)
+        self.assertTrue(any("раскрыт" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_low_hip_lift_jump(self):
+        """Недостаточный вертикальный отрыв (таз низко) должен определяться как ошибка."""
+        movement = self._movement(hip_height={"min_y": 0.6, "max_y": 0.9, "avg_y": 0.75})
+        result = detect_errors_and_recommendations("jump", movement)
+        self.assertTrue(any("отрыв" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_bent_support_leg_balance(self):
+        """Согнутая опорная нога в равновесии должна определяться как ошибка."""
+        movement = self._movement(knee_angle={"left_avg_deg": 120.0, "right_avg_deg": 170.0})
+        result = detect_errors_and_recommendations("balance", movement)
+        self.assertTrue(any("опорн" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_straight_support_leg_balance(self):
+        """Выпрямленная опорная нога в равновесии не должна давать ошибку."""
+        movement = self._movement(knee_angle={"left_avg_deg": 175.0, "right_avg_deg": 172.0})
+        result = detect_errors_and_recommendations("balance", movement)
+        self.assertFalse(any("опорн" in e["message"].lower() for e in result["errors"]))
+
+    def test_systematic_tilt_rotation(self):
+        """Систематический завал оси вращения должен определяться как ошибка."""
+        movement = self._movement(torso_tilt_signed={"avg_deg": 18.0, "abs_max_deg": 25.0})
+        result = detect_errors_and_recommendations("rotation", movement)
+        self.assertTrue(any("завалена" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_symmetric_rotation(self):
+        """Симметричное вращение не должно давать ошибку систематического завала."""
+        movement = self._movement(torso_tilt_signed={"avg_deg": 3.0, "abs_max_deg": 8.0})
+        result = detect_errors_and_recommendations("rotation", movement)
+        self.assertFalse(any("систематически" in e["message"].lower() for e in result["errors"]))
+
+
+class _Landmark:
+    """Простой объект-заглушка с координатами x, y (и visibility)."""
+
+    def __init__(self, x, y, visibility=1.0):
+        self.x = x
+        self.y = y
+        self.visibility = visibility
+
+
+def _pose(landmarks_dict):
+    """Создаёт список из 33 ключевых точек, недостающие заполняет нулями."""
+    pose = [_Landmark(0.0, 0.0) for _ in range(33)]
+    for idx, (x, y) in landmarks_dict.items():
+        pose[idx] = _Landmark(x, y)
+    return pose
+
+
+class TestExerciseSpecificFeatures(unittest.TestCase):
+    """Тесты для exercise-специфичных признаков."""
+
+    def test_knee_angle_straight(self):
+        """Полностью выпрямленная нога должна давать угол ~180°."""
+        # hip(0.5, 0.4), knee(0.5, 0.7), ankle(0.5, 1.0)
+        pose = _pose({23: (0.5, 0.4), 25: (0.5, 0.7), 27: (0.5, 1.0)})
+        angle = compute_knee_angle(pose, "left")
+        self.assertAlmostEqual(angle, 180.0, delta=1.0)
+
+    def test_knee_angle_bent(self):
+        """Согнутая нога должна давать угол заметно меньше 180°."""
+        # hip(0.5, 0.4), knee(0.5, 0.7), ankle(0.3, 0.9)
+        pose = _pose({23: (0.5, 0.4), 25: (0.5, 0.7), 27: (0.3, 0.9)})
+        angle = compute_knee_angle(pose, "left")
+        self.assertLess(angle, 160.0)
+
+    def test_leg_opening_narrow(self):
+        """Ноги вместе должны давать малый угол раскрытия."""
+        # hip_mid(0.5, 0.5), обе стопы в одной точке под тазом
+        pose = _pose({23: (0.45, 0.5), 24: (0.55, 0.5), 27: (0.5, 1.0), 28: (0.5, 1.0)})
+        angle = compute_leg_opening_angle(pose)
+        self.assertLess(angle, 30.0)
+
+    def test_leg_opening_wide(self):
+        """Широко раскрытые ноги (шпагат) должны давать угол близкий к 180°."""
+        pose = _pose({23: (0.45, 0.5), 24: (0.55, 0.5), 27: (0.1, 1.0), 28: (0.9, 1.0)})
+        angle = compute_leg_opening_angle(pose)
+        self.assertGreater(angle, 150.0)
+
+    def test_hip_height(self):
+        """Высота таза — среднее y левого и правого бедра."""
+        pose = _pose({23: (0.4, 0.3), 24: (0.6, 0.5)})
+        self.assertAlmostEqual(compute_hip_height(pose), 0.4, delta=0.001)
+
+    def test_torso_tilt_signed_zero(self):
+        """Вертикальный корпус должен давать нулевой наклон."""
+        pose = _pose({11: (0.4, 0.2), 12: (0.6, 0.2), 23: (0.4, 0.6), 24: (0.6, 0.6)})
+        self.assertAlmostEqual(compute_torso_tilt_signed(pose), 0.0, delta=1.0)
+
+    def test_torso_tilt_signed_positive(self):
+        """Наклон корпуса влево должен давать положительный угол."""
+        # плечи смещены влево относительно таза
+        pose = _pose({11: (0.35, 0.2), 12: (0.45, 0.2), 23: (0.4, 0.6), 24: (0.6, 0.6)})
+        self.assertGreater(compute_torso_tilt_signed(pose), 0.0)
 
 
 if __name__ == "__main__":

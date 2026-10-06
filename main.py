@@ -54,6 +54,8 @@ LANDMARK_LEFT_HIP = 23
 LANDMARK_RIGHT_HIP = 24
 LANDMARK_LEFT_KNEE = 25
 LANDMARK_RIGHT_KNEE = 26
+LANDMARK_LEFT_ANKLE = 27
+LANDMARK_RIGHT_ANKLE = 28
 
 
 def ensure_pose_model() -> None:
@@ -136,11 +138,75 @@ def compute_center_of_mass(landmarks) -> np.ndarray:
     return np.mean(visible, axis=0)
 
 
+def compute_knee_angle(landmarks, side: str) -> float:
+    """
+    Угол в коленном суставе (0–180°).
+    side: "left" или "right". 180° — полностью выпрямленная нога.
+    """
+    if side == "left":
+        hip = _point(landmarks, LANDMARK_LEFT_HIP)
+        knee = _point(landmarks, LANDMARK_LEFT_KNEE)
+        ankle = _point(landmarks, LANDMARK_LEFT_ANKLE)
+    else:
+        hip = _point(landmarks, LANDMARK_RIGHT_HIP)
+        knee = _point(landmarks, LANDMARK_RIGHT_KNEE)
+        ankle = _point(landmarks, LANDMARK_RIGHT_ANKLE)
+
+    v1 = hip - knee
+    v2 = ankle - knee
+    return _angle_between(v1, v2)
+
+
+def compute_leg_opening_angle(landmarks) -> float:
+    """
+    Угол раскрытия ног (шпагат) при прыжке: угол между векторами
+    «таз → левая стопа» и «таз → правая стопа» (0–180°).
+    Чем ближе к 180°, тем шире раскрыты ноги.
+    """
+    hip_mid = (_point(landmarks, LANDMARK_LEFT_HIP) + _point(landmarks, LANDMARK_RIGHT_HIP)) / 2
+    left_vec = _point(landmarks, LANDMARK_LEFT_ANKLE) - hip_mid
+    right_vec = _point(landmarks, LANDMARK_RIGHT_ANKLE) - hip_mid
+    return _angle_between(left_vec, right_vec)
+
+
+def compute_hip_height(landmarks) -> float:
+    """
+    Нормализованная высота таза (среднее y левого и правого бедра).
+    Значение y растёт вниз: чем МЕНЬШЕ y, тем ВЫШЕ таз.
+    """
+    left_y = landmarks[LANDMARK_LEFT_HIP].y
+    right_y = landmarks[LANDMARK_RIGHT_HIP].y
+    return float((left_y + right_y) / 2)
+
+
+def compute_torso_tilt_signed(landmarks) -> float:
+    """
+    Угол наклона корпуса от вертикали в градусах со знаком.
+    Положительный — наклон влево, отрицательный — вправо (в плоскости кадра).
+    Используется для анализа симметрии оси вращения в пируэте.
+    """
+    shoulder_mid = (_point(landmarks, LANDMARK_LEFT_SHOULDER) + _point(landmarks, LANDMARK_RIGHT_SHOULDER)) / 2
+    hip_mid = (_point(landmarks, LANDMARK_LEFT_HIP) + _point(landmarks, LANDMARK_RIGHT_HIP)) / 2
+
+    torso_vec = shoulder_mid - hip_mid  # от таза к плечам
+    vertical = np.array([0.0, -1.0])    # направление «вверх»
+
+    # Угол со знаком: положительный при наклоне влево от вертикали
+    signed_deg = float(np.degrees(np.arctan2(torso_vec[0], -torso_vec[1])))
+    # Ограничиваем диапазон до [-90, 90]
+    return float(np.clip(signed_deg, -90.0, 90.0))
+
+
 def compute_deep_metrics(
     torso_angles: list,
     wrist_heights: list,
     com_positions: list,
     fps: float,
+    knee_angles_left: list = None,
+    knee_angles_right: list = None,
+    leg_opening_angles: list = None,
+    hip_heights: list = None,
+    signed_torso_angles: list = None,
 ) -> dict:
     """Агрегирует метрики углублённого анализа движений."""
     result = {}
@@ -204,6 +270,45 @@ def compute_deep_metrics(
     else:
         result["motion"] = None
 
+    # 5. Признаки, специфичные для упражнений (собираются только при наличии данных)
+    # Равновесие: угол в колене опорной ноги (чем ближе к 180°, тем выпрямленнее нога)
+    if knee_angles_left or knee_angles_right:
+        knee = {}
+        if knee_angles_left:
+            arr_l = np.array(knee_angles_left)
+            knee["left_avg_deg"] = round(float(np.mean(arr_l)), 1)
+            knee["left_min_deg"] = round(float(np.min(arr_l)), 1)
+        if knee_angles_right:
+            arr_r = np.array(knee_angles_right)
+            knee["right_avg_deg"] = round(float(np.mean(arr_r)), 1)
+            knee["right_min_deg"] = round(float(np.min(arr_r)), 1)
+        result["knee_angle"] = knee
+
+    # Прыжок: угол раскрытия ног (шпагат) — чем ближе к 180°, тем шире
+    if leg_opening_angles:
+        arr = np.array(leg_opening_angles)
+        result["leg_opening"] = {
+            "max_deg": round(float(np.max(arr)), 1),
+            "avg_deg": round(float(np.mean(arr)), 1),
+        }
+
+    # Прыжок/кувырок: высота таза (для оценки вертикального отрыва и группировки)
+    if hip_heights:
+        arr = np.array(hip_heights)
+        result["hip_height"] = {
+            "min_y": round(float(np.min(arr)), 3),  # самая высокая точка таза (прыжок)
+            "max_y": round(float(np.max(arr)), 3),  # самая низкая точка таза (кувырок)
+            "avg_y": round(float(np.mean(arr)), 3),
+        }
+
+    # Пируэт: наклон корпуса со знаком (симметрия оси вращения)
+    if signed_torso_angles:
+        arr = np.array(signed_torso_angles)
+        result["torso_tilt_signed"] = {
+            "avg_deg": round(float(np.mean(arr)), 1),
+            "abs_max_deg": round(float(np.max(np.abs(arr))), 1),
+        }
+
     return result
 
 
@@ -216,20 +321,25 @@ THRESHOLDS = {
     "risk-buhavy": {
         "min_tuck_tilt_deg": 60.0,   # минимальный макс. угол наклона при кувырке
         "min_reach_ratio": 0.30,     # минимальная высота подброса булав (0..1)
+        "min_hip_low_y": 0.55,       # минимальный нижний уровень таза при кувырке (0..1, чем больше — тем ниже)
         "max_jerk_count": 15,        # допустимое число рывков при ловле
     },
     "jump": {
         "min_jump_y_range": 0.15,    # минимальный вертикальный размах центра масс
         "min_backbend_tilt_deg": 35.0,  # минимальный макс. наклон корпуса при прогибе
+        "min_leg_opening_deg": 90.0, # минимальный угол раскрытия ног (шпагат)
+        "max_hip_lift_y": 0.45,      # максимальная верхняя точка таза при прыжке (0..1, чем меньше — тем выше)
         "max_jerk_count": 15,        # допустимое число рывков при приземлении
     },
     "balance": {
         "max_com_x_range": 0.10,     # допустимый горизонтальный дрейф центра масс
         "max_avg_tilt_deg": 10.0,    # допустимый средний наклон корпуса
+        "min_knee_extension_deg": 150.0,  # минимальный угол в колене опорной ноги (чем ближе к 180°, тем прямее)
     },
     "rotation": {
         "max_avg_tilt_deg": 12.0,    # допустимый средний наклон оси вращения
         "max_com_x_range": 0.12,     # допустимое смещение оси вращения
+        "max_signed_tilt_deg": 10.0, # допустимый систематический завал оси в одну сторону
         "max_jerk_count": 20,        # допустимое число рывков при вращении
     },
 }
@@ -280,6 +390,10 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
     wrist = movement.get("wrist_height") or {}
     trajectory = movement.get("trajectory") or {}
     motion = movement.get("motion") or {}
+    knee = movement.get("knee_angle") or {}
+    leg_opening = movement.get("leg_opening") or {}
+    hip_height = movement.get("hip_height") or {}
+    torso_signed = movement.get("torso_tilt_signed") or {}
 
     # Если поза почти не была обнаружена — данных для проверки недостаточно
     if not torso and not wrist and not trajectory:
@@ -327,6 +441,22 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
                 "и добавляйте небольшой подъём на носки для увеличения высоты полёта."
             )
 
+        # Кувырок: низкая группировка — таз должен опускаться достаточно низко
+        hip_max_y = hip_height.get("max_y")
+        if hip_max_y is not None and hip_max_y < thresholds["min_hip_low_y"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Недостаточная группировка при кувырке: таз опускается только до "
+                    f"{_fmt(hip_max_y)} высоты кадра (нужно ниже {thresholds['min_hip_low_y']}). "
+                    "Корпус проходит слишком высоко над полом."
+                ),
+            })
+            recommendations.append(
+                "Сильнее группируйтесь: подтягивайте колени к груди и ниже опускайте таз, "
+                "чтобы корпус проходил под булавами."
+            )
+
         jerk_count = motion.get("jerk_count")
         if jerk_count is not None and jerk_count > thresholds["max_jerk_count"]:
             errors.append({
@@ -370,6 +500,37 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
             recommendations.append(
                 "В верхней точке прыжка активнее прогибайтесь в грудном отделе и тяните "
                 "руки назад, раскрывая плечи."
+            )
+
+        # Прыжок: раскрытие ног (шпагат) — угол должен быть широким
+        opening_max = leg_opening.get("max_deg")
+        if opening_max is not None and opening_max < thresholds["min_leg_opening_deg"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Ноги раскрыты недостаточно широко: максимальный угол раскрытия "
+                    f"{_fmt(opening_max, '°')} (нужно не менее {thresholds['min_leg_opening_deg']:.0f}°)."
+                ),
+            })
+            recommendations.append(
+                "В полёте активнее разводите ноги в стороны, тяните носки, "
+                "чтобы раскрыть шпагат и увеличить амплитуду прыжка."
+            )
+
+        # Прыжок: вертикальный отрыв — таз должен подниматься достаточно высоко
+        hip_min_y = hip_height.get("min_y")
+        if hip_min_y is not None and hip_min_y > thresholds["max_hip_lift_y"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Недостаточный вертикальный отрыв: таз поднимается только до "
+                    f"{_fmt(hip_min_y)} высоты кадра (нужно выше {thresholds['max_hip_lift_y']}). "
+                    "Прыжок получается «плоским»."
+                ),
+            })
+            recommendations.append(
+                "Добавьте вертикальный импульс: активнее выталкивайтесь стопами "
+                "и тянитесь макушкой вверх в момент отрыва."
             )
 
         jerk_count = motion.get("jerk_count")
@@ -417,6 +578,32 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
                 "Держите спину вертикально, подтяните живот и не опускайте плечи."
             )
 
+        # Равновесие: выпрямленность опорной ноги — угол в колене должен быть близок к 180°
+        left_avg = knee.get("left_avg_deg")
+        right_avg = knee.get("right_avg_deg")
+        # Опорная нога обычно та, где угол в колене ближе к выпрямленному (180°)
+        support_avg = None
+        if left_avg is not None and right_avg is not None:
+            support_avg = max(left_avg, right_avg)
+        elif left_avg is not None:
+            support_avg = left_avg
+        elif right_avg is not None:
+            support_avg = right_avg
+
+        if support_avg is not None and support_avg < thresholds["min_knee_extension_deg"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Опорная нога согнута: угол в колене {_fmt(support_avg, '°')} "
+                    f"(нужно не менее {thresholds['min_knee_extension_deg']:.0f}°). "
+                    "Согнутая нога делает равновесие менее устойчивым."
+                ),
+            })
+            recommendations.append(
+                "Выпрямляйте опорную ногу в колене, тяните коленную чашечку вверх, "
+                "не заваливайтесь на пятку."
+            )
+
     # --- Поворот (пируэт) ---
     elif exercise == "rotation":
         avg_tilt = torso.get("avg_deg")
@@ -447,6 +634,24 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
             recommendations.append(
                 "Перед началом поворота перенесите вес точно на опорную ногу "
                 "и сохраняйте проекцию центра масс над стопой."
+            )
+
+        # Пируэт: систематический завал оси в одну сторону
+        signed_avg = torso_signed.get("avg_deg")
+        if signed_avg is not None and abs(signed_avg) > thresholds["max_signed_tilt_deg"]:
+            direction = "влево" if signed_avg > 0 else "вправо"
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Ось вращения систематически завалена {direction}: средний наклон "
+                    f"{_fmt(signed_avg, '°')} (допустимо не более "
+                    f"{thresholds['max_signed_tilt_deg']:.0f}° в любую сторону). "
+                    "Вращение уходит в одну сторону."
+                ),
+            })
+            recommendations.append(
+                "Следите за симметрией: держите плечи ровно, не наклоняйте корпус "
+                f"{direction}, тянитесь строго вверх."
             )
 
         jerk_count = motion.get("jerk_count")
@@ -515,6 +720,12 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
     torso_angles = []
     wrist_heights = []
     com_positions = []
+    # Признаки, специфичные для упражнений
+    knee_angles_left = []
+    knee_angles_right = []
+    leg_opening_angles = []
+    hip_heights = []
+    signed_torso_angles = []
 
     base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
     options = mp_vision.PoseLandmarkerOptions(
@@ -545,13 +756,30 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
                     wrist_heights.append(compute_wrist_height(landmarks))
                     com_positions.append(compute_center_of_mass(landmarks))
 
+                    # Собираем признаки, специфичные для упражнений
+                    knee_angles_left.append(compute_knee_angle(landmarks, "left"))
+                    knee_angles_right.append(compute_knee_angle(landmarks, "right"))
+                    leg_opening_angles.append(compute_leg_opening_angle(landmarks))
+                    hip_heights.append(compute_hip_height(landmarks))
+                    signed_torso_angles.append(compute_torso_tilt_signed(landmarks))
+
                 frames_analyzed += 1
 
             frame_idx += 1
 
     cap.release()
 
-    movement = compute_deep_metrics(torso_angles, wrist_heights, com_positions, fps)
+    movement = compute_deep_metrics(
+        torso_angles,
+        wrist_heights,
+        com_positions,
+        fps,
+        knee_angles_left=knee_angles_left,
+        knee_angles_right=knee_angles_right,
+        leg_opening_angles=leg_opening_angles,
+        hip_heights=hip_heights,
+        signed_torso_angles=signed_torso_angles,
+    )
 
     # Детекция ошибок и генерация рекомендаций для выбранного упражнения
     feedback = detect_errors_and_recommendations(exercise, movement)

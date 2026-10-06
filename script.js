@@ -119,6 +119,10 @@ function renderAnalysis(data) {
   const wrist = movement.wrist_height || {};
   const trajectory = movement.trajectory || {};
   const motion = movement.motion || {};
+  const knee = movement.knee_angle || {};
+  const legOpening = movement.leg_opening || {};
+  const hipHeight = movement.hip_height || {};
+  const torsoSigned = movement.torso_tilt_signed || {};
 
   // Базовые метрики
   const baseCards = [
@@ -165,6 +169,44 @@ function renderAnalysis(data) {
         ${metricCard("Макс. скорость", motion.max_speed)}
         ${metricCard("Плавность", motion.smoothness)}
         ${metricCard("Рывков", motion.jerk_count)}
+      </div>`;
+  }
+
+  // Признаки, специфичные для упражнений
+  if (knee.left_avg_deg !== undefined || knee.right_avg_deg !== undefined) {
+    const leftVal = knee.left_avg_deg !== undefined ? `${knee.left_avg_deg}°` : "—";
+    const rightVal = knee.right_avg_deg !== undefined ? `${knee.right_avg_deg}°` : "—";
+    movementHtml += `<h3>🦵 Угол в колене (равновесие)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Левая нога (ср.)", leftVal)}
+        ${metricCard("Правая нога (ср.)", rightVal)}
+        ${metricCard("Левая (мин.)", knee.left_min_deg !== undefined ? `${knee.left_min_deg}°` : "—")}
+        ${metricCard("Правая (мин.)", knee.right_min_deg !== undefined ? `${knee.right_min_deg}°` : "—")}
+      </div>`;
+  }
+
+  if (legOpening.max_deg !== undefined) {
+    movementHtml += `<h3>🦵 Раскрытие ног (прыжок)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Макс. угол", `${legOpening.max_deg}°`)}
+        ${metricCard("Средний угол", `${legOpening.avg_deg}°`)}
+      </div>`;
+  }
+
+  if (hipHeight.min_y !== undefined) {
+    movementHtml += `<h3>📐 Высота таза</h3>
+      <div class="metrics-grid">
+        ${metricCard("Верхняя точка (Y)", hipHeight.min_y)}
+        ${metricCard("Нижняя точка (Y)", hipHeight.max_y !== undefined ? hipHeight.max_y : "—")}
+        ${metricCard("Средняя (Y)", hipHeight.avg_y !== undefined ? hipHeight.avg_y : "—")}
+      </div>`;
+  }
+
+  if (torsoSigned.avg_deg !== undefined) {
+    movementHtml += `<h3>🎯 Наклон оси (пируэт)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Средний наклон", `${torsoSigned.avg_deg}°`)}
+        ${metricCard("Макс. отклонение", `${torsoSigned.abs_max_deg}°`)}
       </div>`;
   }
 
