@@ -179,6 +179,49 @@ def compute_hip_height(landmarks) -> float:
     return float((left_y + right_y) / 2)
 
 
+def compute_ankle_y(landmarks, side: str) -> float:
+    """
+    Нормализованная высота лодыжки (y) для заданной стороны.
+    Значение y растёт вниз: чем МЕНЬШЕ y, тем ВЫШЕ стопа.
+    Используется для определения опорной ноги в равновесии.
+    """
+    idx = LANDMARK_LEFT_ANKLE if side == "left" else LANDMARK_RIGHT_ANKLE
+    return float(landmarks[idx].y)
+
+
+def compute_ankle_height(landmarks) -> float:
+    """
+    Средняя нормализованная высота стоп (среднее y левой и правой лодыжки).
+    Чем МЕНЬШЕ значение, тем ВЫШЕ подняты стопы (прыжок).
+    """
+    left_y = landmarks[LANDMARK_LEFT_ANKLE].y
+    right_y = landmarks[LANDMARK_RIGHT_ANKLE].y
+    return float((left_y + right_y) / 2)
+
+
+def compute_arm_symmetry(landmarks) -> float:
+    """
+    Асимметрия рук: модуль разницы высот левого и правого запястья (0..1).
+    Чем ближе к 0, тем симметричнее руки (важно для пируэта).
+    """
+    left_y = landmarks[LANDMARK_LEFT_WRIST].y
+    right_y = landmarks[LANDMARK_RIGHT_WRIST].y
+    return float(abs(left_y - right_y))
+
+
+def compute_rotation_angle_world(world_landmarks) -> float:
+    """
+    Угол ориентации плечевой линии в горизонтальной плоскости (градусы).
+    Использует 3D world landmarks (x — вправо, y — вверх, z — от камеры).
+    Применяется для подсчёта числа витков в пируэте.
+    """
+    left = world_landmarks[LANDMARK_LEFT_SHOULDER]
+    right = world_landmarks[LANDMARK_RIGHT_SHOULDER]
+    dx = right.x - left.x
+    dz = right.z - left.z
+    return float(np.degrees(np.arctan2(dz, dx)))
+
+
 def compute_torso_tilt_signed(landmarks) -> float:
     """
     Угол наклона корпуса от вертикали в градусах со знаком.
@@ -207,6 +250,11 @@ def compute_deep_metrics(
     leg_opening_angles: list = None,
     hip_heights: list = None,
     signed_torso_angles: list = None,
+    ankle_heights: list = None,
+    ankle_y_left: list = None,
+    ankle_y_right: list = None,
+    arm_symmetries: list = None,
+    rotation_angles_world: list = None,
 ) -> dict:
     """Агрегирует метрики углублённого анализа движений."""
     result = {}
@@ -309,6 +357,52 @@ def compute_deep_metrics(
             "abs_max_deg": round(float(np.max(np.abs(arr))), 1),
         }
 
+    # Прыжок: высота стоп при отрыве
+    if ankle_heights:
+        arr = np.array(ankle_heights)
+        result["ankle_height"] = {
+            "min_y": round(float(np.min(arr)), 3),  # самая высокая точка стоп
+            "avg_y": round(float(np.mean(arr)), 3),
+        }
+
+    # Равновесие: высоты лодыжек (для определения опорной ноги)
+    if ankle_y_left and ankle_y_right:
+        result["ankle_y"] = {
+            "left_avg_y": round(float(np.mean(ankle_y_left)), 3),
+            "right_avg_y": round(float(np.mean(ankle_y_right)), 3),
+            # Средняя разница высот: > 0 => левая выше (правая опорная), < 0 => наоборот
+            "avg_diff": round(float(np.mean(np.array(ankle_y_left) - np.array(ankle_y_right))), 3),
+        }
+    elif ankle_y_left:
+        result["ankle_y"] = {
+            "left_avg_y": round(float(np.mean(ankle_y_left)), 3),
+            "right_avg_y": None,
+            "avg_diff": None,
+        }
+    elif ankle_y_right:
+        result["ankle_y"] = {
+            "left_avg_y": None,
+            "right_avg_y": round(float(np.mean(ankle_y_right)), 3),
+            "avg_diff": None,
+        }
+
+    # Пируэт: асимметрия рук
+    if arm_symmetries:
+        arr = np.array(arm_symmetries)
+        result["arm_symmetry"] = {
+            "avg_diff": round(float(np.mean(arr)), 3),
+            "max_diff": round(float(np.max(arr)), 3),
+        }
+
+    # Пируэт: число витков по углу поворота плечевой линии
+    if rotation_angles_world:
+        angles = np.unwrap(np.radians(np.array(rotation_angles_world)))
+        total_rotation_deg = float(np.degrees(angles[-1] - angles[0]))
+        result["rotation_turns"] = {
+            "total_deg": round(total_rotation_deg, 1),
+            "turns": round(abs(total_rotation_deg) / 360.0, 2),
+        }
+
     return result
 
 
@@ -329,17 +423,21 @@ THRESHOLDS = {
         "min_backbend_tilt_deg": 35.0,  # минимальный макс. наклон корпуса при прогибе
         "min_leg_opening_deg": 90.0, # минимальный угол раскрытия ног (шпагат)
         "max_hip_lift_y": 0.45,      # максимальная верхняя точка таза при прыжке (0..1, чем меньше — тем выше)
+        "max_ankle_lift_y": 0.80,    # максимальная высота стоп при отрыве (0..1, чем меньше — тем выше)
         "max_jerk_count": 15,        # допустимое число рывков при приземлении
     },
     "balance": {
         "max_com_x_range": 0.10,     # допустимый горизонтальный дрейф центра масс
         "max_avg_tilt_deg": 10.0,    # допустимый средний наклон корпуса
         "min_knee_extension_deg": 150.0,  # минимальный угол в колене опорной ноги (чем ближе к 180°, тем прямее)
+        "min_ankle_height_diff": 0.08,  # минимальная разница высот стоп для определения опорной ноги
     },
     "rotation": {
         "max_avg_tilt_deg": 12.0,    # допустимый средний наклон оси вращения
         "max_com_x_range": 0.12,     # допустимое смещение оси вращения
         "max_signed_tilt_deg": 10.0, # допустимый систематический завал оси в одну сторону
+        "max_arm_symmetry": 0.10,    # допустимая разница высот запястий (0..1)
+        "min_turns": 1.0,            # ожидаемое минимальное число витков
         "max_jerk_count": 20,        # допустимое число рывков при вращении
     },
 }
@@ -394,6 +492,10 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
     leg_opening = movement.get("leg_opening") or {}
     hip_height = movement.get("hip_height") or {}
     torso_signed = movement.get("torso_tilt_signed") or {}
+    ankle_height = movement.get("ankle_height") or {}
+    ankle_y = movement.get("ankle_y") or {}
+    arm_symmetry = movement.get("arm_symmetry") or {}
+    rotation_turns = movement.get("rotation_turns") or {}
 
     # Если поза почти не была обнаружена — данных для проверки недостаточно
     if not torso and not wrist and not trajectory:
@@ -533,6 +635,22 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
                 "и тянитесь макушкой вверх в момент отрыва."
             )
 
+        # Прыжок: высота отрыва стоп — стопы должны подниматься от пола
+        ankle_min_y = ankle_height.get("min_y")
+        if ankle_min_y is not None and ankle_min_y > thresholds["max_ankle_lift_y"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Стопы почти не отрываются от пола: максимальная высота стоп "
+                    f"{_fmt(ankle_min_y)} (нужно выше {thresholds['max_ankle_lift_y']}). "
+                    "Отрыв недостаточно высокий."
+                ),
+            })
+            recommendations.append(
+                "Выталкивайтесь активнее носками, поднимайте стопы от пола "
+                "и вытягивайте носки в полёте."
+            )
+
         jerk_count = motion.get("jerk_count")
         if jerk_count is not None and jerk_count > thresholds["max_jerk_count"]:
             errors.append({
@@ -581,27 +699,47 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
         # Равновесие: выпрямленность опорной ноги — угол в колене должен быть близок к 180°
         left_avg = knee.get("left_avg_deg")
         right_avg = knee.get("right_avg_deg")
-        # Опорная нога обычно та, где угол в колене ближе к выпрямленному (180°)
+        # Определяем опорную ногу по высоте лодыжек: опорная стопа обычно ниже (стоит на полу),
+        # свободная — поднята. Используем среднюю разницу высот (left - right).
+        # y растёт вниз: если left_y - right_y > 0, левая лодыжка НИЖЕ -> опорная левая.
+        ankle_diff = ankle_y.get("avg_diff")
+
+        support_side = None
+        if ankle_diff is not None:
+            if ankle_diff > thresholds["min_ankle_height_diff"]:
+                support_side = "left"
+            elif ankle_diff < -thresholds["min_ankle_height_diff"]:
+                support_side = "right"
+        # Запасной вариант: если разница высот мала, используем более выпрямленное колено
+        if support_side is None:
+            if left_avg is not None and right_avg is not None:
+                support_side = "left" if left_avg >= right_avg else "right"
+            elif left_avg is not None:
+                support_side = "left"
+            elif right_avg is not None:
+                support_side = "right"
+
         support_avg = None
-        if left_avg is not None and right_avg is not None:
-            support_avg = max(left_avg, right_avg)
-        elif left_avg is not None:
+        support_label = None
+        if support_side == "left":
             support_avg = left_avg
-        elif right_avg is not None:
+            support_label = "левая"
+        elif support_side == "right":
             support_avg = right_avg
+            support_label = "правая"
 
         if support_avg is not None and support_avg < thresholds["min_knee_extension_deg"]:
             errors.append({
                 "severity": "warning",
                 "message": (
-                    f"Опорная нога согнута: угол в колене {_fmt(support_avg, '°')} "
-                    f"(нужно не менее {thresholds['min_knee_extension_deg']:.0f}°). "
+                    f"Опорная нога ({support_label}) согнута: угол в колене "
+                    f"{_fmt(support_avg, '°')} (нужно не менее {thresholds['min_knee_extension_deg']:.0f}°). "
                     "Согнутая нога делает равновесие менее устойчивым."
                 ),
             })
             recommendations.append(
-                "Выпрямляйте опорную ногу в колене, тяните коленную чашечку вверх, "
-                "не заваливайтесь на пятку."
+                f"Выпрямляйте опорную ({support_label}) ногу в колене, тяните коленную "
+                "чашечку вверх, не заваливайтесь на пятку."
             )
 
     # --- Поворот (пируэт) ---
@@ -652,6 +790,38 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
             recommendations.append(
                 "Следите за симметрией: держите плечи ровно, не наклоняйте корпус "
                 f"{direction}, тянитесь строго вверх."
+            )
+
+        # Пируэт: число витков (по углу поворота плечевой линии)
+        turns = rotation_turns.get("turns")
+        total_deg = rotation_turns.get("total_deg")
+        if turns is not None and turns < thresholds["min_turns"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Мало витков в пируэте: выполнен поворот на {_fmt(total_deg, '°')} "
+                    f"(примерно {_fmt(turns, ' об.')}, нужно не менее {thresholds['min_turns']:.0f})."
+                ),
+            })
+            recommendations.append(
+                "Увеличивайте темп вращения: активнее работайте руками и не замедляйтесь "
+                "между витками."
+            )
+
+        # Пируэт: симметрия рук — запястья должны быть на примерно одинаковой высоте
+        arm_diff = arm_symmetry.get("avg_diff")
+        if arm_diff is not None and arm_diff > thresholds["max_arm_symmetry"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Руки асимметричны: разница высот запястий {_fmt(arm_diff)} "
+                    f"(допустимо не более {thresholds['max_arm_symmetry']}). "
+                    "Это нарушает баланс и ось вращения."
+                ),
+            })
+            recommendations.append(
+                "Держите руки на одной высоте, симметрично относительно оси вращения, "
+                "не опускайте одну из рук."
             )
 
         jerk_count = motion.get("jerk_count")
@@ -726,6 +896,11 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
     leg_opening_angles = []
     hip_heights = []
     signed_torso_angles = []
+    ankle_heights = []           # средняя высота стоп (прыжок)
+    ankle_y_left = []            # высота левой лодыжки (равновесие)
+    ankle_y_right = []           # высота правой лодыжки (равновесие)
+    arm_symmetries = []          # асимметрия рук (пируэт)
+    rotation_angles_world = []   # угол плечевой линии в 3D (пируэт: витки)
 
     base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
     options = mp_vision.PoseLandmarkerOptions(
@@ -762,6 +937,14 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
                     leg_opening_angles.append(compute_leg_opening_angle(landmarks))
                     hip_heights.append(compute_hip_height(landmarks))
                     signed_torso_angles.append(compute_torso_tilt_signed(landmarks))
+                    ankle_heights.append(compute_ankle_height(landmarks))
+                    ankle_y_left.append(compute_ankle_y(landmarks, "left"))
+                    ankle_y_right.append(compute_ankle_y(landmarks, "right"))
+                    arm_symmetries.append(compute_arm_symmetry(landmarks))
+                    if results.world_landmarks:
+                        rotation_angles_world.append(
+                            compute_rotation_angle_world(results.world_landmarks[0])
+                        )
 
                 frames_analyzed += 1
 
@@ -779,6 +962,11 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
         leg_opening_angles=leg_opening_angles,
         hip_heights=hip_heights,
         signed_torso_angles=signed_torso_angles,
+        ankle_heights=ankle_heights,
+        ankle_y_left=ankle_y_left,
+        ankle_y_right=ankle_y_right,
+        arm_symmetries=arm_symmetries,
+        rotation_angles_world=rotation_angles_world,
     )
 
     # Детекция ошибок и генерация рекомендаций для выбранного упражнения

@@ -13,6 +13,10 @@ from main import (
     compute_leg_opening_angle,
     compute_hip_height,
     compute_torso_tilt_signed,
+    compute_ankle_y,
+    compute_ankle_height,
+    compute_arm_symmetry,
+    compute_rotation_angle_world,
 )
 
 
@@ -188,6 +192,76 @@ class TestDetectErrorsAndRecommendations(unittest.TestCase):
         result = detect_errors_and_recommendations("rotation", movement)
         self.assertFalse(any("систематически" in e["message"].lower() for e in result["errors"]))
 
+    def test_few_turns_rotation(self):
+        """Малое число витков в пируэте должно определяться как ошибка."""
+        movement = self._movement(rotation_turns={"total_deg": 120.0, "turns": 0.33})
+        result = detect_errors_and_recommendations("rotation", movement)
+        self.assertTrue(any("витк" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_enough_turns_rotation(self):
+        """Достаточное число витков не должно давать ошибку."""
+        movement = self._movement(rotation_turns={"total_deg": 720.0, "turns": 2.0})
+        result = detect_errors_and_recommendations("rotation", movement)
+        self.assertFalse(any("витк" in e["message"].lower() for e in result["errors"]))
+
+    def test_asymmetric_arms_rotation(self):
+        """Асимметрия рук должна определяться как ошибка."""
+        movement = self._movement(arm_symmetry={"avg_diff": 0.25, "max_diff": 0.4})
+        result = detect_errors_and_recommendations("rotation", movement)
+        self.assertTrue(any("асимметричн" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_symmetric_arms_rotation(self):
+        """Симметричные руки не должны давать ошибку."""
+        movement = self._movement(arm_symmetry={"avg_diff": 0.03, "max_diff": 0.08})
+        result = detect_errors_and_recommendations("rotation", movement)
+        self.assertFalse(any("асимметричн" in e["message"].lower() for e in result["errors"]))
+
+    def test_low_ankle_lift_jump(self):
+        """Низкий отрыв стоп в прыжке должен определяться как ошибка."""
+        movement = self._movement(ankle_height={"min_y": 0.85, "avg_y": 0.9})
+        result = detect_errors_and_recommendations("jump", movement)
+        self.assertTrue(any("стоп" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(result["recommendations"])
+
+    def test_high_ankle_lift_jump(self):
+        """Высокий отрыв стоп в прыжке не должен давать ошибку."""
+        movement = self._movement(ankle_height={"min_y": 0.5, "avg_y": 0.7})
+        result = detect_errors_and_recommendations("jump", movement)
+        self.assertFalse(any("стоп" in e["message"].lower() for e in result["errors"]))
+
+    def test_bent_support_leg_by_ankle_balance(self):
+        """Опорная нога определяется по высоте лодыжек; согнутая — ошибка."""
+        movement = self._movement(
+            ankle_y={"left_avg_y": 0.3, "right_avg_y": 0.9, "avg_diff": -0.6},
+            knee_angle={"left_avg_deg": 120.0, "right_avg_deg": 175.0},
+        )
+        result = detect_errors_and_recommendations("balance", movement)
+        # Левая лодыжка выше -> опорная правая (175°), ошибки быть не должно
+        self.assertFalse(any("опорн" in e["message"].lower() for e in result["errors"]))
+
+    def test_bent_support_leg_left_balance(self):
+        """Если опорная левая нога согнута — ошибка с указанием ноги."""
+        # left_y(0.95) - right_y(0.35) = 0.6 > 0 => левая лодыжка ниже => опорная левая
+        movement = self._movement(
+            ankle_y={"left_avg_y": 0.95, "right_avg_y": 0.35, "avg_diff": 0.6},
+            knee_angle={"left_avg_deg": 120.0, "right_avg_deg": 175.0},
+        )
+        result = detect_errors_and_recommendations("balance", movement)
+        self.assertTrue(any("опорн" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(any("левая" in e["message"].lower() for e in result["errors"]))
+
+    def test_straight_support_leg_right_balance(self):
+        """Если опорная правая нога выпрямлена — ошибки нет."""
+        # left_y(0.35) - right_y(0.95) = -0.6 < 0 => правая лодыжка ниже => опорная правая
+        movement = self._movement(
+            ankle_y={"left_avg_y": 0.35, "right_avg_y": 0.95, "avg_diff": -0.6},
+            knee_angle={"left_avg_deg": 175.0, "right_avg_deg": 175.0},
+        )
+        result = detect_errors_and_recommendations("balance", movement)
+        self.assertFalse(any("опорн" in e["message"].lower() for e in result["errors"]))
+
 
 class _Landmark:
     """Простой объект-заглушка с координатами x, y (и visibility)."""
@@ -251,6 +325,52 @@ class TestExerciseSpecificFeatures(unittest.TestCase):
         # плечи смещены влево относительно таза
         pose = _pose({11: (0.35, 0.2), 12: (0.45, 0.2), 23: (0.4, 0.6), 24: (0.6, 0.6)})
         self.assertGreater(compute_torso_tilt_signed(pose), 0.0)
+
+    def test_ankle_y(self):
+        """Высота лодыжки — просто y ключевой точки."""
+        pose = _pose({27: (0.5, 0.95), 28: (0.5, 0.3)})
+        self.assertAlmostEqual(compute_ankle_y(pose, "left"), 0.95, delta=0.001)
+        self.assertAlmostEqual(compute_ankle_y(pose, "right"), 0.3, delta=0.001)
+
+    def test_ankle_height(self):
+        """Средняя высота стоп — среднее y лодыжек."""
+        pose = _pose({27: (0.5, 0.4), 28: (0.5, 0.8)})
+        self.assertAlmostEqual(compute_ankle_height(pose), 0.6, delta=0.001)
+
+    def test_arm_symmetry(self):
+        """Асимметрия рук — модуль разницы высот запястий."""
+        pose = _pose({15: (0.3, 0.25), 16: (0.7, 0.65)})
+        self.assertAlmostEqual(compute_arm_symmetry(pose), 0.4, delta=0.001)
+
+    def test_arm_symmetry_zero(self):
+        """Симметричные руки дают нулевую асимметрию."""
+        pose = _pose({15: (0.3, 0.4), 16: (0.7, 0.4)})
+        self.assertAlmostEqual(compute_arm_symmetry(pose), 0.0, delta=0.001)
+
+    def test_rotation_angle_world(self):
+        """Угол ориентации плечевой линии по world-координатам."""
+        class WL:
+            def __init__(self, x, z):
+                self.x = x
+                self.z = z
+
+        # Плечи направлены вдоль X (dz = 0) -> угол 0°
+        world = {11: WL(0.0, 0.0), 12: WL(1.0, 0.0)}
+        self.assertAlmostEqual(compute_rotation_angle_world(world), 0.0, delta=1.0)
+
+        # Плечи направлены вдоль Z (dx = 0) -> угол 90°
+        world = {11: WL(0.0, 0.0), 12: WL(0.0, 1.0)}
+        self.assertAlmostEqual(compute_rotation_angle_world(world), 90.0, delta=1.0)
+
+    def test_rotation_angle_world_negative(self):
+        """Поворот в другую сторону даёт отрицательный угол."""
+        class WL:
+            def __init__(self, x, z):
+                self.x = x
+                self.z = z
+
+        world = {11: WL(0.0, 0.0), 12: WL(0.0, -1.0)}
+        self.assertAlmostEqual(compute_rotation_angle_world(world), -90.0, delta=1.0)
 
 
 if __name__ == "__main__":

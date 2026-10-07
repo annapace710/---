@@ -123,6 +123,10 @@ function renderAnalysis(data) {
   const legOpening = movement.leg_opening || {};
   const hipHeight = movement.hip_height || {};
   const torsoSigned = movement.torso_tilt_signed || {};
+  const ankleHeight = movement.ankle_height || {};
+  const ankleY = movement.ankle_y || {};
+  const armSymmetry = movement.arm_symmetry || {};
+  const rotationTurns = movement.rotation_turns || {};
 
   // Базовые метрики
   const baseCards = [
@@ -207,6 +211,39 @@ function renderAnalysis(data) {
       <div class="metrics-grid">
         ${metricCard("Средний наклон", `${torsoSigned.avg_deg}°`)}
         ${metricCard("Макс. отклонение", `${torsoSigned.abs_max_deg}°`)}
+      </div>`;
+  }
+
+  if (ankleHeight.min_y !== undefined) {
+    movementHtml += `<h3>🦶 Высота стоп (прыжок)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Верхняя точка (Y)", ankleHeight.min_y)}
+        ${metricCard("Средняя (Y)", ankleHeight.avg_y !== undefined ? ankleHeight.avg_y : "—")}
+      </div>`;
+  }
+
+  if (ankleY.avg_diff !== undefined) {
+    movementHtml += `<h3>🦵 Опорная нога (равновесие)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Левая лодыжка (ср.)", ankleY.left_avg_y !== undefined ? ankleY.left_avg_y : "—")}
+        ${metricCard("Правая лодыжка (ср.)", ankleY.right_avg_y !== undefined ? ankleY.right_avg_y : "—")}
+        ${metricCard("Разница высот", ankleY.avg_diff)}
+      </div>`;
+  }
+
+  if (rotationTurns.turns !== undefined) {
+    movementHtml += `<h3>🔄 Витки (пируэт)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Число витков", rotationTurns.turns)}
+        ${metricCard("Суммарный угол", `${rotationTurns.total_deg}°`)}
+      </div>`;
+  }
+
+  if (armSymmetry.avg_diff !== undefined) {
+    movementHtml += `<h3>💪 Симметрия рук (пируэт)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Средняя разница", armSymmetry.avg_diff)}
+        ${metricCard("Макс. разница", armSymmetry.max_diff)}
       </div>`;
   }
 
