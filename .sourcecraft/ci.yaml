@@ -1,0 +1,22 @@
+# CI/CD: запуск unit-тестов проекта rhythmic-gymnastics-assistant
+on:
+  push:
+    - workflows: [run-tests]
+      filter:
+        branches: ["main"]
+  pull_request:
+    - workflows: [run-tests]
+      filter:
+        target_branches: "main"
+
+workflows:
+  run-tests:
+    tasks:
+      - name: run-tests-task
+        cubes:
+          - name: run-tests
+            image: docker.io/library/python:3.12-slim
+            script:
+              - python -m pip install --upgrade pip
+              - pip install -r requirements.txt
+              - python test_main.py
