@@ -17,8 +17,11 @@ from main import (
     compute_ankle_height,
     compute_arm_symmetry,
     compute_rotation_angle_world,
+    select_target_tracks,
+    AthleteTrack,
+    track_athletes,
 )
-from club_tracker import ClubTracker, analyze_club_flight, ClubTrajectory
+from club_tracker import ClubTracker, analyze_club_flight, ClubTrajectory, assign_clubs_to_athletes
 
 
 class TestValidateVideoFile(unittest.TestCase):
@@ -516,6 +519,98 @@ class TestClubTracker(unittest.TestCase):
         trajectories = tracker.track(frames)
         self.assertGreaterEqual(len(trajectories), 1)
         self.assertIsNotNone(trajectories[0].peak_y)
+
+
+class TestAthleteTracking(unittest.TestCase):
+    """Тесты для трекинга гимнасток и связывания булав."""
+
+    def _pose_with(self, center_x, center_y, scale=0.1):
+        """Создаёт скелет (33 точки), сосредоточенный вокруг центра."""
+        class LM:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+                self.visibility = 1.0
+
+        pts = []
+        for i in range(33):
+            pts.append(LM(center_x + (i % 5 - 2) * scale / 2,
+                          center_y + (i % 7 - 3) * scale / 2))
+        return pts
+
+    def test_select_target_tracks_individual(self):
+        """individual выбирает самый крупный трек."""
+        t1 = AthleteTrack(index=0)
+        t1.size_sum = 10.0
+        t1.frames_seen = 1
+        t2 = AthleteTrack(index=1)
+        t2.size_sum = 30.0
+        t2.frames_seen = 1
+        selected = select_target_tracks([t1, t2], "individual")
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0].index, 1)
+
+    def test_select_target_tracks_group(self):
+        """group выбирает 5 самых крупных треков."""
+        tracks = []
+        for i in range(7):
+            t = AthleteTrack(index=i)
+            t.size_sum = float(i)
+            t.frames_seen = 1
+            tracks.append(t)
+        selected = select_target_tracks(tracks, "group")
+        self.assertEqual(len(selected), 5)
+        # Самые крупные — индексы 6,5,4,3,2
+        idxs = [t.index for t in selected]
+        self.assertEqual(idxs, [6, 5, 4, 3, 2])
+
+    def test_assign_clubs_to_athletes(self):
+        """Булавы привязываются к ближайшей гимнастке по запястьям."""
+        left = ClubTrajectory()
+        left.positions = [(0.2, 0.3), (0.2, 0.2)]
+        right = ClubTrajectory()
+        right.positions = [(0.8, 0.3), (0.8, 0.2)]
+
+        # Гимнастка 0 — слева (запястья ~0.2), гимнастка 1 — справа (~0.8)
+        wrist_positions = [
+            [(0.2, 0.4), (0.2, 0.35)],
+            [(0.8, 0.4), (0.8, 0.35)],
+        ]
+        result = assign_clubs_to_athletes([left, right], wrist_positions)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(len(result[0]), 1)
+        self.assertEqual(len(result[1]), 1)
+        # Левая булава — гимнастке 0, правая — гимнастке 1
+        self.assertAlmostEqual(result[0][0].positions[0][0], 0.2, delta=0.001)
+        self.assertAlmostEqual(result[1][0].positions[0][0], 0.8, delta=0.001)
+
+    def test_athlete_track_add_frame(self):
+        """AthleteTrack накапливает ряды признаков по кадрам."""
+        # Заглушка landmarks: объект с x, y, visibility
+        class LM:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+                self.visibility = 1.0
+
+        pts = []
+        for i in range(33):
+            pts.append(LM(0.1 + i * 0.02, 0.1 + (i % 3) * 0.02))
+        track = AthleteTrack(index=0)
+        track.add_frame(pts)
+        self.assertEqual(track.frames_seen, 1)
+        self.assertEqual(len(track.torso_angles), 1)
+        self.assertEqual(len(track.wrist_heights), 1)
+        self.assertIsNotNone(track.last_center)
+
+    def test_track_athletes_two_people(self):
+        """Два человека в кадре → два трека."""
+        frames = [
+            ([self._pose_with(0.3, 0.4), self._pose_with(0.7, 0.4)], None),
+            ([self._pose_with(0.3, 0.41), self._pose_with(0.7, 0.42)], None),
+        ]
+        tracks = track_athletes(frames, 30.0)
+        self.assertEqual(len(tracks), 2)
 
 
 if __name__ == "__main__":

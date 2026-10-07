@@ -9,9 +9,12 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
 
-from club_tracker import ClubTracker, analyze_club_flight
+from club_tracker import ClubTracker, analyze_club_flight, assign_clubs_to_athletes
 
 app = FastAPI()
+
+# Размер группы для группового формата (число гимнасток)
+GROUP_SIZE = 5
 
 # CORS: разрешаем обращения с фронтенда (SourceCraft Sites), локальной разработки
 # и туннелей Google Colab (Cloudflare/ngrok)
@@ -244,6 +247,165 @@ def compute_torso_tilt_signed(landmarks) -> float:
     signed_deg = float(np.degrees(np.arctan2(torso_vec[0], -torso_vec[1])))
     # Ограничиваем диапазон до [-90, 90]
     return float(np.clip(signed_deg, -90.0, 90.0))
+
+
+def select_target_athletes(poses, format_type: str, group_size: int = GROUP_SIZE):
+    """
+    Выбирает целевых гимнасток из списка всех обнаруженных поз.
+
+    poses: список списков landmark-точек (каждый элемент — скелет одной гимнастки).
+    format_type: "individual" — один самый крупный скелет; "group" — group_size самых крупных.
+
+    Возвращает список выбранных скелетов (для individual — не более 1).
+    """
+    if not poses:
+        return []
+
+    # Оценка «размера» скелета по bounding box ключевых точек
+    def _size(landmarks):
+        xs = [lm.x for lm in landmarks]
+        ys = [lm.y for lm in landmarks]
+        return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+    ranked = sorted(poses, key=_size, reverse=True)
+
+    if format_type == "group":
+        return ranked[:group_size]
+    # individual — один самый крупный
+    return ranked[:1]
+
+
+# Максимальное нормализованное расстояние для сопоставления скелета с треком гимнастки
+MAX_ATHLETE_MATCH_DIST = 0.30
+
+
+def _skeleton_center(landmarks) -> tuple:
+    """Центр скелета: среднее всех ключевых точек."""
+    xs = [lm.x for lm in landmarks]
+    ys = [lm.y for lm in landmarks]
+    return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+
+def _skeleton_size(landmarks) -> float:
+    """Площадь bounding box скелета (для ранжирования «кто на переднем плане»)."""
+    xs = [lm.x for lm in landmarks]
+    ys = [lm.y for lm in landmarks]
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+class AthleteTrack:
+    """
+    Трек одной гимнастки: накапливает временные ряды признаков по кадрам.
+    Используется для последующего вычисления агрегированных метрик.
+    """
+
+    def __init__(self, index: int):
+        self.index = index
+        self.torso_angles = []
+        self.wrist_heights = []
+        self.com_positions = []
+        self.knee_angles_left = []
+        self.knee_angles_right = []
+        self.leg_opening_angles = []
+        self.hip_heights = []
+        self.signed_torso_angles = []
+        self.ankle_heights = []
+        self.ankle_y_left = []
+        self.ankle_y_right = []
+        self.arm_symmetries = []
+        self.rotation_angles_world = []
+        self.wrist_positions = []   # средние позиции запястий (для связывания булав)
+        self.last_center = None
+        self.size_sum = 0.0
+        self.frames_seen = 0
+
+    def add_frame(self, landmarks, world_landmarks=None) -> None:
+        """Добавляет кадр: вычисляет все признаки и сохраняет в ряды."""
+        self.torso_angles.append(compute_torso_tilt(landmarks))
+        self.wrist_heights.append(compute_wrist_height(landmarks))
+        self.com_positions.append(compute_center_of_mass(landmarks))
+        self.knee_angles_left.append(compute_knee_angle(landmarks, "left"))
+        self.knee_angles_right.append(compute_knee_angle(landmarks, "right"))
+        self.leg_opening_angles.append(compute_leg_opening_angle(landmarks))
+        self.hip_heights.append(compute_hip_height(landmarks))
+        self.signed_torso_angles.append(compute_torso_tilt_signed(landmarks))
+        self.ankle_heights.append(compute_ankle_height(landmarks))
+        self.ankle_y_left.append(compute_ankle_y(landmarks, "left"))
+        self.ankle_y_right.append(compute_ankle_y(landmarks, "right"))
+        self.arm_symmetries.append(compute_arm_symmetry(landmarks))
+
+        left_w = _point(landmarks, LANDMARK_LEFT_WRIST)
+        right_w = _point(landmarks, LANDMARK_RIGHT_WRIST)
+        self.wrist_positions.append(((left_w[0] + right_w[0]) / 2, (left_w[1] + right_w[1]) / 2))
+
+        if world_landmarks is not None:
+            try:
+                self.rotation_angles_world.append(compute_rotation_angle_world(world_landmarks))
+            except Exception:
+                pass
+
+        self.last_center = _skeleton_center(landmarks)
+        self.size_sum += _skeleton_size(landmarks)
+        self.frames_seen += 1
+
+    @property
+    def avg_size(self) -> float:
+        """Средний размер скелета за всё время наблюдения."""
+        return self.size_sum / max(self.frames_seen, 1)
+
+
+def track_athletes(
+    frames_with_poses,
+    fps: float,
+) -> list:
+    """
+    Строит треки гимнасток по последовательности кадров.
+
+    frames_with_poses: список кортежей (frame_bgr, pose_landmarks, world_landmarks).
+    Возвращает список AthleteTrack.
+    """
+    tracks: list = []
+
+    for frame, pose_landmarks_list, world_landmarks_list in frames_with_poses:
+        if not pose_landmarks_list:
+            continue
+
+        used_tracks = set()
+        for i, landmarks in enumerate(pose_landmarks_list):
+            center = _skeleton_center(landmarks)
+            world = None
+            if world_landmarks_list and i < len(world_landmarks_list):
+                world = world_landmarks_list[i]
+
+            # Ищем ближайший трек, у которого есть last_center
+            best_track = None
+            best_dist = MAX_ATHLETE_MATCH_DIST  # порог
+            for t in tracks:
+                if id(t) in used_tracks or t.last_center is None:
+                    continue
+                d = (center[0] - t.last_center[0]) ** 2 + (center[1] - t.last_center[1]) ** 2
+                if d < best_dist:
+                    best_dist = d
+                    best_track = t
+
+            if best_track is None:
+                best_track = AthleteTrack(index=len(tracks))
+                tracks.append(best_track)
+
+            best_track.add_frame(landmarks, world)
+            used_tracks.add(id(best_track))
+
+    return tracks
+
+
+def select_target_tracks(tracks: list, format_type: str, group_size: int = GROUP_SIZE) -> list:
+    """
+    Выбирает целевые треки: individual — самый крупный, group — group_size самых крупных.
+    """
+    ranked = sorted(tracks, key=lambda t: t.avg_size, reverse=True)
+    if format_type == "group":
+        return ranked[:group_size]
+    return ranked[:1]
 
 
 def compute_deep_metrics(
@@ -967,12 +1129,15 @@ def detect_errors_and_recommendations(exercise: str, movement: dict, clubs: dict
     }
 
 
-def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
+def analyze_video(video_path: str, exercise: str = "unknown", format_type: str = "individual") -> dict:
     """
     Анализирует видео с помощью MediaPipe PoseLandmarker (Tasks API):
-    определяет наличие человека, собирает статистику, вычисляет
+    определяет наличие человека/группы, собирает статистику, вычисляет
     метрики углублённого анализа движений и формирует
     рекомендации по технике для выбранного упражнения.
+
+    format_type: "individual" — одна гимнастка (самая крупная в кадре),
+                 "group" — группа из GROUP_SIZE гимнасток.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -986,26 +1151,12 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
     frames_analyzed = 0
     pose_detections = 0
 
+    # Кадры с позами всех обнаруженных людей (для построения треков гимнасток)
+    frames_with_poses = []
     # Кадры для трекинга булав (анализируем те же кадры, что и позу)
     frames_for_clubs = []
     # Трекер булав: использует кастомную ONNX-модель, если она есть, иначе HSV
     club_tracker = ClubTracker(model_path=CLUB_MODEL_PATH)
-
-    # Сырые данные для углублённого анализа
-    torso_angles = []
-    wrist_heights = []
-    com_positions = []
-    # Признаки, специфичные для упражнений
-    knee_angles_left = []
-    knee_angles_right = []
-    leg_opening_angles = []
-    hip_heights = []
-    signed_torso_angles = []
-    ankle_heights = []           # средняя высота стоп (прыжок)
-    ankle_y_left = []            # высота левой лодыжки (равновесие)
-    ankle_y_right = []           # высота правой лодыжки (равновесие)
-    arm_symmetries = []          # асимметрия рук (пируэт)
-    rotation_angles_world = []   # угол плечевой линии в 3D (пируэт: витки)
 
     base_options = mp_python.BaseOptions(model_asset_path=MODEL_PATH)
     options = mp_vision.PoseLandmarkerOptions(
@@ -1033,27 +1184,11 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
                 if exercise == "risk-buhavy":
                     frames_for_clubs.append(frame)
 
-                if results.pose_landmarks:
+                pose_list = list(results.pose_landmarks) if results.pose_landmarks else []
+                world_list = list(results.world_landmarks) if results.world_landmarks else []
+                if pose_list:
                     pose_detections += 1
-                    landmarks = results.pose_landmarks[0]
-                    torso_angles.append(compute_torso_tilt(landmarks))
-                    wrist_heights.append(compute_wrist_height(landmarks))
-                    com_positions.append(compute_center_of_mass(landmarks))
-
-                    # Собираем признаки, специфичные для упражнений
-                    knee_angles_left.append(compute_knee_angle(landmarks, "left"))
-                    knee_angles_right.append(compute_knee_angle(landmarks, "right"))
-                    leg_opening_angles.append(compute_leg_opening_angle(landmarks))
-                    hip_heights.append(compute_hip_height(landmarks))
-                    signed_torso_angles.append(compute_torso_tilt_signed(landmarks))
-                    ankle_heights.append(compute_ankle_height(landmarks))
-                    ankle_y_left.append(compute_ankle_y(landmarks, "left"))
-                    ankle_y_right.append(compute_ankle_y(landmarks, "right"))
-                    arm_symmetries.append(compute_arm_symmetry(landmarks))
-                    if results.world_landmarks:
-                        rotation_angles_world.append(
-                            compute_rotation_angle_world(results.world_landmarks[0])
-                        )
+                    frames_with_poses.append((frame, pose_list, world_list))
 
                 frames_analyzed += 1
 
@@ -1061,31 +1196,99 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
 
     cap.release()
 
-    movement = compute_deep_metrics(
-        torso_angles,
-        wrist_heights,
-        com_positions,
-        fps,
-        knee_angles_left=knee_angles_left,
-        knee_angles_right=knee_angles_right,
-        leg_opening_angles=leg_opening_angles,
-        hip_heights=hip_heights,
-        signed_torso_angles=signed_torso_angles,
-        ankle_heights=ankle_heights,
-        ankle_y_left=ankle_y_left,
-        ankle_y_right=ankle_y_right,
-        arm_symmetries=arm_symmetries,
-        rotation_angles_world=rotation_angles_world,
-    )
+    # Строим треки всех гимнасток и выбираем целевых
+    all_tracks = track_athletes(frames_with_poses, fps)
+    target_tracks = select_target_tracks(all_tracks, format_type)
+
+    if not target_tracks:
+        return {
+            "total_frames": total_frames,
+            "fps": round(fps, 2),
+            "frames_analyzed": frames_analyzed,
+            "pose_detections": pose_detections,
+            "pose_presence": round(pose_detections / max(frames_analyzed, 1), 3),
+            "movement": None,
+            "athletes": [],
+            "clubs": None,
+            "feedback": {
+                "overall_score": None,
+                "errors": [
+                    {"severity": "critical", "message": "Не удалось обнаружить гимнастку в кадре."}
+                ],
+                "recommendations": [
+                    "Убедитесь, что спортсменка полностью в кадре и хорошо освещена."
+                ],
+                "summary": "Анализ невозможен: человек не обнаружен.",
+            },
+            "format": format_type,
+        }
+
+    # Для каждой целевой гимнастки вычисляем агрегированные метрики
+    athlete_results = []
+    for i, track in enumerate(target_tracks):
+        movement = compute_deep_metrics(
+            track.torso_angles,
+            track.wrist_heights,
+            track.com_positions,
+            fps,
+            knee_angles_left=track.knee_angles_left,
+            knee_angles_right=track.knee_angles_right,
+            leg_opening_angles=track.leg_opening_angles,
+            hip_heights=track.hip_heights,
+            signed_torso_angles=track.signed_torso_angles,
+            ankle_heights=track.ankle_heights,
+            ankle_y_left=track.ankle_y_left,
+            ankle_y_right=track.ankle_y_right,
+            arm_symmetries=track.arm_symmetries,
+            rotation_angles_world=track.rotation_angles_world,
+        )
+        athlete_results.append({
+            "index": i,
+            "movement": movement,
+            "frames_seen": track.frames_seen,
+        })
 
     # Трекинг булав (только для упражнения с булавами)
     clubs = None
     if exercise == "risk-buhavy" and frames_for_clubs:
         trajectories = club_tracker.track(frames_for_clubs)
-        clubs = analyze_club_flight(trajectories, fps)
 
-    # Детекция ошибок и генерация рекомендаций для выбранного упражнения
-    feedback = detect_errors_and_recommendations(exercise, movement, clubs)
+        # Для индивидуального формата связываем булавы с единственной гимнасткой
+        if format_type == "individual" and target_tracks:
+            wrist_positions = [target_tracks[0].wrist_positions]
+            assigned = assign_clubs_to_athletes(trajectories, wrist_positions)
+            if assigned:
+                trajectories = assigned[0]
+        # Для группового формата связываем булавы с каждой гимнасткой
+        elif format_type == "group" and target_tracks:
+            wrist_positions = [t.wrist_positions for t in target_tracks]
+            assigned_groups = assign_clubs_to_athletes(trajectories, wrist_positions)
+            # Сохраняем траектории по гимнасткам для дальнейшего анализа
+            clubs_per_athlete = [analyze_club_flight(group, fps) for group in assigned_groups]
+            clubs = {
+                "format": "group",
+                "athletes": clubs_per_athlete,
+                "clubs_detected_total": len(trajectories),
+            }
+        else:
+            clubs = analyze_club_flight(trajectories, fps)
+    else:
+        clubs = None
+
+    # Детекция ошибок для первой гимнастки (для обратной совместимости ответа)
+    first_movement = athlete_results[0]["movement"] if athlete_results else {}
+    if isinstance(clubs, dict) and clubs.get("format") == "group":
+        feedback = detect_errors_and_recommendations(exercise, first_movement, None)
+    else:
+        feedback = detect_errors_and_recommendations(exercise, first_movement, clubs)
+
+    # Для группового формата — отдельный feedback для каждой гимнастки
+    athletes_output = []
+    for res in athlete_results:
+        athletes_output.append({
+            **res,
+            "feedback": detect_errors_and_recommendations(exercise, res["movement"], None),
+        })
 
     return {
         "total_frames": total_frames,
@@ -1093,9 +1296,11 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
         "frames_analyzed": frames_analyzed,
         "pose_detections": pose_detections,
         "pose_presence": round(pose_detections / max(frames_analyzed, 1), 3),
-        "movement": movement,
+        "movement": first_movement if first_movement else None,
+        "athletes": athletes_output,
         "clubs": clubs,
         "feedback": feedback,
+        "format": format_type,
     }
 
 
@@ -1103,6 +1308,7 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
 async def upload_video(
     video_file: UploadFile = File(...),
     exercise: str = Form("unknown"),
+    format_type: str = Form("individual"),
 ):
     filename = video_file.filename or "video.mp4"
 
@@ -1122,11 +1328,12 @@ async def upload_video(
                 buffer.write(chunk)
 
         # 3. Анализ видео
-        analysis = analyze_video(save_path, exercise)
+        analysis = analyze_video(save_path, exercise, format_type)
         return {
             "message": "Видео получено",
             "file": unique_name,
             "exercise": exercise,
+            "format": format_type,
             "analysis": analysis,
         }
     finally:

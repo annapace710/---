@@ -115,7 +115,9 @@ function renderAnalysis(data) {
   const analysis = data.analysis || {};
   const feedback = analysis.feedback || {};
   const movement = analysis.movement || {};
+  const athletes = analysis.athletes || [];
   const clubs = analysis.clubs || {};
+  const format = analysis.format || "individual";
   const torso = movement.torso_tilt || {};
   const wrist = movement.wrist_height || {};
   const trajectory = movement.trajectory || {};
@@ -309,9 +311,34 @@ function renderAnalysis(data) {
       ${renderRecommendations(feedback.recommendations)}`;
   }
 
+  // Групповой формат: карточки по каждой гимнастке
+  let athletesHtml = "";
+  if (format === "group" && athletes.length > 0) {
+    const cards = athletes.map((athlete, i) => {
+      const fb = athlete.feedback || {};
+      const score = fb.overall_score != null ? fb.overall_score : "—";
+      const errCount = (fb.errors || []).length;
+      const errText = errCount
+        ? `<span class="error-text">Ошибок: ${errCount}</span>`
+        : `<span class="feedback-success">✅ Без ошибок</span>`;
+      return `
+        <div class="metric athlete-card">
+          <span class="metric-label">Гимнастка ${i + 1}</span>
+          <span class="metric-value">${score}</span>
+          ${errText}
+        </div>`;
+    }).join("");
+    athletesHtml = `
+      <div class="feedback-block">
+        <h3>👥 Результаты по гимнасткам</h3>
+        <div class="metrics-grid">${cards}</div>
+      </div>`;
+  }
+
   resultContent.innerHTML = `
     <div class="metrics-grid">${baseCards}</div>
     <div class="movement-block">${movementHtml}</div>
+    ${athletesHtml}
     ${feedbackHtml}
   `;
 }
@@ -336,6 +363,7 @@ form.addEventListener("submit", async function (event) {
   }
 
   const exercise = document.getElementById("exercise-select").value;
+  const format = document.getElementById("format-select").value;
   const apiBaseUrl = getApiBaseUrl();
 
   // Сохраняем адрес API для следующего визита
@@ -345,6 +373,7 @@ form.addEventListener("submit", async function (event) {
   const formData = new FormData();
   formData.append("video_file", file);
   formData.append("exercise", exercise);
+  formData.append("format", format);
 
   // Блокируем кнопку на время запроса
   analyzeBtn.disabled = true;

@@ -257,12 +257,11 @@ def analyze_club_flight(
     Анализирует траектории булав и возвращает метрики полёта:
 
     {
-        "clubs_detected": 0..2,
+        "clubs_detected": 0..N,
         "throw_height": { "left": ..., "right": ..., "max": ..., "min": ... },  # 0..1 (0 — верх кадра)
         "symmetry": { "height_diff": ..., "peak_frame_diff": ... },
         "simultaneity": { "peak_frame_diff": ..., "simultaneous": bool },
         "catch_position": { "left": {"x":..., "y":...}, "right": {...} },
-        "fallback_to_hsv": bool  # использовалась ли HSV-сегментация
     }
     """
     result = {
@@ -308,5 +307,76 @@ def analyze_club_flight(
             "left": {"x": left.catch_x, "y": left.catch_y},
             "right": {"x": right.catch_x, "y": right.catch_y},
         }
+
+    return result
+
+
+def assign_clubs_to_athletes(
+    trajectories: List[ClubTrajectory],
+    athlete_wrist_positions: List[List[Tuple[float, float]]],
+) -> List[List[ClubTrajectory]]:
+    """
+    Связывает траектории булав с гимнастками по близости к запястьям.
+
+    athlete_wrist_positions: список; для каждой гимнастки — список позиций запястий
+    (нормализованные (x, y)) по кадрам. Размеры списков должны совпадать по кадрам:
+    для каждого кадра число позиций запястий = число кадров, где эта гимнастка видна.
+
+    Возвращает список списков траекторий: для каждой гимнастки — её булавы (до 2).
+    """
+    if not athlete_wrist_positions:
+        return []
+
+    # Для каждой гимнастки собираем все позиции запястий (по всем кадрам)
+    wrist_points_per_athlete = []
+    for wrists in athlete_wrist_positions:
+        pts = [(x, y) for (x, y) in wrists]
+        wrist_points_per_athlete.append(pts)
+
+    # Для каждой траектории вычисляем среднюю позицию
+    traj_means = []
+    for traj in trajectories:
+        if traj.positions:
+            xs = [p[0] for p in traj.positions]
+            ys = [p[1] for p in traj.positions]
+            traj_means.append((sum(xs) / len(xs), sum(ys) / len(ys)))
+        else:
+            traj_means.append((0.5, 0.5))
+
+    # Жадное назначение: каждой траектории — ближайшая гимнастка по среднему расстоянию
+    # до её запястий
+    assignments = []  # для каждой траектории — индекс гимнастки
+    used_athletes = set()
+    # Сортируем траектории по «силе» (количеству точек) — сначала самые надёжные
+    order = sorted(range(len(trajectories)), key=lambda i: len(trajectories[i].positions), reverse=True)
+    for i in order:
+        best_athlete = None
+        best_dist = float("inf")
+        for a_idx, wrist_pts in enumerate(wrist_points_per_athlete):
+            if a_idx in used_athletes and len(trajectories) <= len(wrist_points_per_athlete):
+                # Если гимнасток столько же, сколько траекторий — не переиспользуем
+                continue
+            if not wrist_pts:
+                continue
+            dist = min(
+                (traj_means[i][0] - wx) ** 2 + (traj_means[i][1] - wy) ** 2
+                for (wx, wy) in wrist_pts
+            )
+            if dist < best_dist:
+                best_dist = dist
+                best_athlete = a_idx
+        if best_athlete is None:
+            best_athlete = 0
+        assignments.append((i, best_athlete))
+        used_athletes.add(best_athlete)
+
+    # Собираем результат: для каждой гимнастки — список её траекторий
+    result = [[] for _ in range(len(athlete_wrist_positions))]
+    for traj_idx, athlete_idx in assignments:
+        result[athlete_idx].append(trajectories[traj_idx])
+
+    # В каждой группе сортируем по x (левая/правая)
+    for group in result:
+        group.sort(key=lambda t: sum(p[0] for p in t.positions) / len(t.positions))
 
     return result
