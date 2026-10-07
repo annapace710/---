@@ -244,7 +244,8 @@ def compute_torso_tilt_signed(landmarks) -> float:
     vertical = np.array([0.0, -1.0])    # направление «вверх»
 
     # Угол со знаком: положительный при наклоне влево от вертикали
-    signed_deg = float(np.degrees(np.arctan2(torso_vec[0], -torso_vec[1])))
+    # (если плечи смещены влево относительно таза, torso_vec[0] < 0 -> угол положительный)
+    signed_deg = float(np.degrees(np.arctan2(-torso_vec[0], -torso_vec[1])))
     # Ограничиваем диапазон до [-90, 90]
     return float(np.clip(signed_deg, -90.0, 90.0))
 

@@ -2,6 +2,9 @@ import os
 import sys
 import unittest
 
+import cv2
+import numpy as np
+
 # Добавляем корень проекта в путь, чтобы импортировать main
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -233,7 +236,11 @@ class TestDetectErrorsAndRecommendations(unittest.TestCase):
 
     def test_bent_support_leg_balance(self):
         """Согнутая опорная нога в равновесии должна определяться как ошибка."""
-        movement = self._movement(knee_angle={"left_avg_deg": 120.0, "right_avg_deg": 170.0})
+        # left_y(0.95) - right_y(0.35) = 0.6 > 0 => левая лодыжка ниже => опорная левая (120° < 150°)
+        movement = self._movement(
+            ankle_y={"left_avg_y": 0.95, "right_avg_y": 0.35, "avg_diff": 0.6},
+            knee_angle={"left_avg_deg": 120.0, "right_avg_deg": 170.0},
+        )
         result = detect_errors_and_recommendations("balance", movement)
         self.assertTrue(any("опорн" in e["message"].lower() for e in result["errors"]))
         self.assertTrue(result["recommendations"])
@@ -371,7 +378,8 @@ class TestExerciseSpecificFeatures(unittest.TestCase):
 
     def test_leg_opening_wide(self):
         """Широко раскрытые ноги (шпагат) должны давать угол близкий к 180°."""
-        pose = _pose({23: (0.45, 0.5), 24: (0.55, 0.5), 27: (0.1, 1.0), 28: (0.9, 1.0)})
+        # Горизонтальный шпагат: таз по центру, стопы на том же уровне по горизонтали
+        pose = _pose({23: (0.45, 0.5), 24: (0.55, 0.5), 27: (0.0, 0.5), 28: (1.0, 0.5)})
         angle = compute_leg_opening_angle(pose)
         self.assertGreater(angle, 150.0)
 
@@ -480,13 +488,13 @@ class TestClubTracker(unittest.TestCase):
         right = ClubTrajectory()
         right.positions = [(0.7, 0.8), (0.7, 0.5), (0.7, 0.7)]
         right.peak_y = 0.5
-        right.peak_frame = 3
+        right.peak_frame = 6
         right.catch_x, right.catch_y = 0.7, 0.7
 
         result = analyze_club_flight([left, right], 30.0)
         self.assertEqual(result["throw_height"]["max"], 0.1)
         self.assertEqual(result["symmetry"]["height_diff"], 0.4)
-        self.assertEqual(result["simultaneity"]["peak_frame_diff"], 2)
+        self.assertEqual(result["simultaneity"]["peak_frame_diff"], 5)
         self.assertFalse(result["simultaneity"]["simultaneous"])
 
     def test_detect_hsv_yellow_club(self):
@@ -606,8 +614,8 @@ class TestAthleteTracking(unittest.TestCase):
     def test_track_athletes_two_people(self):
         """Два человека в кадре → два трека."""
         frames = [
-            ([self._pose_with(0.3, 0.4), self._pose_with(0.7, 0.4)], None),
-            ([self._pose_with(0.3, 0.41), self._pose_with(0.7, 0.42)], None),
+            (None, [self._pose_with(0.3, 0.4), self._pose_with(0.7, 0.4)], None),
+            (None, [self._pose_with(0.3, 0.41), self._pose_with(0.7, 0.42)], None),
         ]
         tracks = track_athletes(frames, 30.0)
         self.assertEqual(len(tracks), 2)
