@@ -1,0 +1,5 @@
+# Зависимости для обучения собственной модели детекции булав
+# Установка: pip install -r requirements-train.txt
+ultralytics>=8.0.0
+onnx>=1.15.0
+onnxruntime>=1.16.0

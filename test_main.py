@@ -18,6 +18,7 @@ from main import (
     compute_arm_symmetry,
     compute_rotation_angle_world,
 )
+from club_tracker import ClubTracker, analyze_club_flight, ClubTrajectory
 
 
 class TestValidateVideoFile(unittest.TestCase):
@@ -151,6 +152,67 @@ class TestDetectErrorsAndRecommendations(unittest.TestCase):
         result = detect_errors_and_recommendations("risk-buhavy", movement)
         self.assertTrue(any("группировк" in e["message"].lower() for e in result["errors"]))
         self.assertTrue(result["recommendations"])
+
+    def test_clubs_asymmetric_throw_risk_buhavy(self):
+        """Асимметричный бросок булав должен определяться как ошибка."""
+        movement = self._movement()
+        clubs = {
+            "clubs_detected": 2,
+            "throw_height": {"left": 0.2, "right": 0.2, "max": 0.2, "min": 0.2},
+            "symmetry": {"height_diff": 0.25, "peak_frame_diff": 1},
+            "simultaneity": {"peak_frame_diff": 1, "simultaneous": True},
+            "catch_position": {"left": {"x": 0.4, "y": 0.7}, "right": {"x": 0.6, "y": 0.7}},
+        }
+        result = detect_errors_and_recommendations("risk-buhavy", movement, clubs)
+        self.assertTrue(any("разной высоте" in e["message"].lower() for e in result["errors"]))
+
+    def test_clubs_not_simultaneous_risk_buhavy(self):
+        """Неодновременный подброс булав должен определяться как ошибка."""
+        movement = self._movement()
+        clubs = {
+            "clubs_detected": 2,
+            "throw_height": {"left": 0.2, "right": 0.2, "max": 0.2, "min": 0.2},
+            "symmetry": {"height_diff": 0.02, "peak_frame_diff": 8},
+            "simultaneity": {"peak_frame_diff": 8, "simultaneous": False},
+            "catch_position": {"left": {"x": 0.4, "y": 0.7}, "right": {"x": 0.6, "y": 0.7}},
+        }
+        result = detect_errors_and_recommendations("risk-buhavy", movement, clubs)
+        self.assertTrue(any("не одновременно" in e["message"].lower() for e in result["errors"]))
+
+    def test_clubs_catch_offset_risk_buhavy(self):
+        """Ловля булавы со смещением от центра должна определяться как ошибка."""
+        movement = self._movement()
+        clubs = {
+            "clubs_detected": 2,
+            "throw_height": {"left": 0.2, "right": 0.2, "max": 0.2, "min": 0.2},
+            "symmetry": {"height_diff": 0.02, "peak_frame_diff": 1},
+            "simultaneity": {"peak_frame_diff": 1, "simultaneous": True},
+            "catch_position": {"left": {"x": 0.1, "y": 0.7}, "right": {"x": 0.9, "y": 0.7}},
+        }
+        result = detect_errors_and_recommendations("risk-buhavy", movement, clubs)
+        self.assertTrue(any("смещена от центра" in e["message"].lower() for e in result["errors"]))
+
+    def test_clubs_one_detected_risk_buhavy(self):
+        """Одна обнаруженная булава — предупреждение о невозможности оценки симметрии."""
+        movement = self._movement()
+        clubs = {"clubs_detected": 1, "throw_height": None, "symmetry": None,
+                 "simultaneity": None, "catch_position": None}
+        result = detect_errors_and_recommendations("risk-buhavy", movement, clubs)
+        self.assertTrue(any("только одна" in e["message"].lower() for e in result["errors"]))
+
+    def test_clubs_none_detected_risk_buhavy(self):
+        """Булавы не обнаружены — предупреждение."""
+        movement = self._movement()
+        clubs = {"clubs_detected": 0, "throw_height": None, "symmetry": None,
+                 "simultaneity": None, "catch_position": None}
+        result = detect_errors_and_recommendations("risk-buhavy", movement, clubs)
+        self.assertTrue(any("не обнаружены" in e["message"].lower() for e in result["errors"]))
+
+    def test_clubs_none_param_risk_buhavy(self):
+        """Если clubs=None (трекинг не выполнялся) — ошибок про булавы быть не должно."""
+        movement = self._movement()
+        result = detect_errors_and_recommendations("risk-buhavy", movement, None)
+        self.assertFalse(any("булав" in e["message"].lower() for e in result["errors"]))
 
     def test_narrow_legs_jump(self):
         """Недостаточное раскрытие ног в прыжке должно определяться как ошибка."""
@@ -371,6 +433,89 @@ class TestExerciseSpecificFeatures(unittest.TestCase):
 
         world = {11: WL(0.0, 0.0), 12: WL(0.0, -1.0)}
         self.assertAlmostEqual(compute_rotation_angle_world(world), -90.0, delta=1.0)
+
+
+class TestClubTracker(unittest.TestCase):
+    """Тесты для трекинга булав и анализа траекторий."""
+
+    def test_analyze_club_flight_empty(self):
+        """Без траекторий метрики полёта пустые."""
+        result = analyze_club_flight([], 30.0)
+        self.assertEqual(result["clubs_detected"], 0)
+        self.assertIsNone(result["throw_height"])
+        self.assertIsNone(result["symmetry"])
+
+    def test_analyze_club_flight_two_clubs(self):
+        """Две траектории: высота, симметрия, одновременность, ловля."""
+        left = ClubTrajectory()
+        left.positions = [(0.3, 0.8), (0.3, 0.5), (0.3, 0.2)]
+        left.peak_y = 0.2
+        left.peak_frame = 2
+        left.catch_x, left.catch_y = 0.3, 0.7
+
+        right = ClubTrajectory()
+        right.positions = [(0.7, 0.8), (0.7, 0.4), (0.7, 0.2)]
+        right.peak_y = 0.2
+        right.peak_frame = 2
+        right.catch_x, right.catch_y = 0.7, 0.7
+
+        result = analyze_club_flight([left, right], 30.0)
+        self.assertEqual(result["clubs_detected"], 2)
+        self.assertEqual(result["throw_height"]["max"], 0.2)
+        self.assertEqual(result["symmetry"]["height_diff"], 0.0)
+        self.assertTrue(result["simultaneity"]["simultaneous"])
+        self.assertEqual(result["catch_position"]["left"]["x"], 0.3)
+
+    def test_analyze_club_flight_asymmetric(self):
+        """Асимметричный бросок: разная высота и неодновременность."""
+        left = ClubTrajectory()
+        left.positions = [(0.3, 0.8), (0.3, 0.1), (0.3, 0.6)]
+        left.peak_y = 0.1
+        left.peak_frame = 1
+        left.catch_x, left.catch_y = 0.3, 0.6
+
+        right = ClubTrajectory()
+        right.positions = [(0.7, 0.8), (0.7, 0.5), (0.7, 0.7)]
+        right.peak_y = 0.5
+        right.peak_frame = 3
+        right.catch_x, right.catch_y = 0.7, 0.7
+
+        result = analyze_club_flight([left, right], 30.0)
+        self.assertEqual(result["throw_height"]["max"], 0.1)
+        self.assertEqual(result["symmetry"]["height_diff"], 0.4)
+        self.assertEqual(result["simultaneity"]["peak_frame_diff"], 2)
+        self.assertFalse(result["simultaneity"]["simultaneous"])
+
+    def test_detect_hsv_yellow_club(self):
+        """HSV-детекция: жёлтый объект на тёмном фоне обнаруживается."""
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        # Рисуем жёлтый круг (BGR: (0, 255, 255))
+        cv2.circle(frame, (50, 50), 12, (0, 255, 255), -1)
+        tracker = ClubTracker()
+        detections = tracker.detect(frame)
+        self.assertGreaterEqual(len(detections), 1)
+
+    def test_detect_hsv_no_clubs(self):
+        """Без ярких объектов детекций нет."""
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        # Тёмный фон — ничего не должно детектироваться
+        tracker = ClubTracker()
+        detections = tracker.detect(frame)
+        self.assertEqual(len(detections), 0)
+
+    def test_track_returns_trajectories(self):
+        """Трекинг последовательности кадров возвращает траектории с пиками."""
+        frames = []
+        for i in range(10):
+            frame = np.zeros((200, 200, 3), dtype=np.uint8)
+            y = 180 - i * 10  # булава летит вверх
+            cv2.circle(frame, (50, y), 10, (0, 255, 255), -1)  # жёлтая
+            frames.append(frame)
+
+        tracker = ClubTracker()
+        trajectories = tracker.track(frames)
+        self.assertGreaterEqual(len(trajectories), 1)
+        self.assertIsNotNone(trajectories[0].peak_y)
 
 
 if __name__ == "__main__":

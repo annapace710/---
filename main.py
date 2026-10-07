@@ -9,6 +9,8 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
 
+from club_tracker import ClubTracker, analyze_club_flight
+
 app = FastAPI()
 
 # CORS: разрешаем обращения с фронтенда (SourceCraft Sites), локальной разработки
@@ -42,6 +44,10 @@ MODEL_URL = (
     "pose_landmarker_lite/float16/1/pose_landmarker_lite.task"
 )
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "pose_landmarker_lite.task")
+
+# Кастомная ONNX-модель детекции булав (обучается через train_club_detector.py).
+# Если файл отсутствует — используется HSV-сегментация (club_tracker.py).
+CLUB_MODEL_PATH = os.path.join(os.path.dirname(__file__), "club_detector.onnx")
 
 # Индексы ключевых точек MediaPipe Pose (33 точки)
 LANDMARK_LEFT_SHOULDER = 11
@@ -416,6 +422,9 @@ THRESHOLDS = {
         "min_tuck_tilt_deg": 60.0,   # минимальный макс. угол наклона при кувырке
         "min_reach_ratio": 0.30,     # минимальная высота подброса булав (0..1)
         "min_hip_low_y": 0.55,       # минимальный нижний уровень таза при кувырке (0..1, чем больше — тем ниже)
+        "max_club_height_diff": 0.08,  # допустимая разница высот броска двух булав (0..1)
+        "max_peak_frame_diff": 4,      # допустимая разница кадров достижения пика (одновременность)
+        "max_catch_x_deviation": 0.20, # допустимое отклонение точки ловли от центра (по x)
         "max_jerk_count": 15,        # допустимое число рывков при ловле
     },
     "jump": {
@@ -456,10 +465,12 @@ def _fmt(value, suffix=""):
     return f"{value}{suffix}"
 
 
-def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
+def detect_errors_and_recommendations(exercise: str, movement: dict, clubs: dict = None) -> dict:
     """
     Детектирует ошибки техники и формирует рекомендации для конкретного
     упражнения на основе агрегированных метрик движения.
+
+    clubs: данные трекинга булав (результат analyze_club_flight) или None.
 
     Возвращает:
     {
@@ -557,6 +568,95 @@ def detect_errors_and_recommendations(exercise: str, movement: dict) -> dict:
             recommendations.append(
                 "Сильнее группируйтесь: подтягивайте колени к груди и ниже опускайте таз, "
                 "чтобы корпус проходил под булавами."
+            )
+
+        # --- Трекинг булав: параметры полёта предметов ---
+        clubs_info = clubs or {}
+        throw_height = clubs_info.get("throw_height") or {}
+        symmetry = clubs_info.get("symmetry") or {}
+        simultaneity = clubs_info.get("simultaneity") or {}
+        catch_position = clubs_info.get("catch_position") or {}
+
+        if clubs_info.get("clubs_detected", 0) >= 2:
+            # Высота броска (по пикам траекторий)
+            max_height_y = throw_height.get("max")
+            if max_height_y is not None and max_height_y > thresholds["min_reach_ratio"]:
+                errors.append({
+                    "severity": "warning",
+                    "message": (
+                        f"Бросок булав недостаточно высокий: максимальная точка полёта "
+                        f"{_fmt(max_height_y)} высоты кадра (нужно выше "
+                        f"{thresholds['min_reach_ratio']})."
+                    ),
+                })
+                recommendations.append(
+                    "Увеличивайте высоту подброса: энергичнее выталкивайте булавы вверх "
+                    "от плеча и добавляйте импульс кистью."
+                )
+
+            # Симметрия высоты броска
+            height_diff = symmetry.get("height_diff")
+            if height_diff is not None and height_diff > thresholds["max_club_height_diff"]:
+                errors.append({
+                    "severity": "warning",
+                    "message": (
+                        f"Булавы летят на разной высоте: разница пиков "
+                        f"{_fmt(height_diff)} (допустимо не более "
+                        f"{thresholds['max_club_height_diff']})."
+                    ),
+                })
+                recommendations.append(
+                    "Подбрасывайте обе булавы с одинаковым усилием и на одну высоту, "
+                    "контролируя симметрию движения рук."
+                )
+
+            # Одновременность
+            peak_frame_diff = simultaneity.get("peak_frame_diff")
+            if peak_frame_diff is not None and peak_frame_diff > thresholds["max_peak_frame_diff"]:
+                errors.append({
+                    "severity": "warning",
+                    "message": (
+                        f"Булавы подброшены не одновременно: разница достижения верхней точки "
+                        f"{_fmt(peak_frame_diff, ' кадр.')} (допустимо не более "
+                        f"{thresholds['max_peak_frame_diff']})."
+                    ),
+                })
+                recommendations.append(
+                    "Работайте руками синхронно: подбрасывайте булавы одним движением, "
+                    "не растягивая фазу броска."
+                )
+
+            # Позиция ловли: проверяем отклонение от центра по x
+            for side_key, label in [("left", "левой"), ("right", "правой")]:
+                pos = catch_position.get(side_key) or {}
+                catch_x = pos.get("x")
+                if catch_x is not None and abs(catch_x - 0.5) > thresholds["max_catch_x_deviation"]:
+                    errors.append({
+                        "severity": "warning",
+                        "message": (
+                            f"Ловля {label} булавы смещена от центра: позиция по x "
+                            f"{_fmt(round(catch_x, 2))} (центр 0.50, допустимое отклонение "
+                            f"{thresholds['max_catch_x_deviation']})."
+                        ),
+                    })
+                    recommendations.append(
+                        f"Ловите {label} булаву ближе к оси тела, не уводя руки в сторону."
+                    )
+        elif clubs_info.get("clubs_detected") == 1:
+            errors.append({
+                "severity": "warning",
+                "message": "Обнаружена только одна булава — оценить симметрию и одновременность броска невозможно.",
+            })
+            recommendations.append(
+                "Убедитесь, что обе булавы хорошо видны в кадре и имеют яркую, контрастную окраску."
+            )
+        elif clubs is not None and clubs_info.get("clubs_detected") == 0:
+            errors.append({
+                "severity": "warning",
+                "message": "Булавы не обнаружены в кадре — параметры полёта предметов не оценены.",
+            })
+            recommendations.append(
+                "Снимайте при хорошем освещении; булавы должны быть яркими и не сливаться с фоном."
             )
 
         jerk_count = motion.get("jerk_count")
@@ -886,6 +986,11 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
     frames_analyzed = 0
     pose_detections = 0
 
+    # Кадры для трекинга булав (анализируем те же кадры, что и позу)
+    frames_for_clubs = []
+    # Трекер булав: использует кастомную ONNX-модель, если она есть, иначе HSV
+    club_tracker = ClubTracker(model_path=CLUB_MODEL_PATH)
+
     # Сырые данные для углублённого анализа
     torso_angles = []
     wrist_heights = []
@@ -923,6 +1028,10 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 timestamp_ms = int(frame_idx * 1000 / fps) if fps else 0
                 results = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+                # Сохраняем кадр для трекинга булав (если выбрано упражнение с булавами)
+                if exercise == "risk-buhavy":
+                    frames_for_clubs.append(frame)
 
                 if results.pose_landmarks:
                     pose_detections += 1
@@ -969,8 +1078,14 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
         rotation_angles_world=rotation_angles_world,
     )
 
+    # Трекинг булав (только для упражнения с булавами)
+    clubs = None
+    if exercise == "risk-buhavy" and frames_for_clubs:
+        trajectories = club_tracker.track(frames_for_clubs)
+        clubs = analyze_club_flight(trajectories, fps)
+
     # Детекция ошибок и генерация рекомендаций для выбранного упражнения
-    feedback = detect_errors_and_recommendations(exercise, movement)
+    feedback = detect_errors_and_recommendations(exercise, movement, clubs)
 
     return {
         "total_frames": total_frames,
@@ -979,6 +1094,7 @@ def analyze_video(video_path: str, exercise: str = "unknown") -> dict:
         "pose_detections": pose_detections,
         "pose_presence": round(pose_detections / max(frames_analyzed, 1), 3),
         "movement": movement,
+        "clubs": clubs,
         "feedback": feedback,
     }
 

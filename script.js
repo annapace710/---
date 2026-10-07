@@ -115,6 +115,7 @@ function renderAnalysis(data) {
   const analysis = data.analysis || {};
   const feedback = analysis.feedback || {};
   const movement = analysis.movement || {};
+  const clubs = analysis.clubs || {};
   const torso = movement.torso_tilt || {};
   const wrist = movement.wrist_height || {};
   const trajectory = movement.trajectory || {};
@@ -155,6 +156,44 @@ function renderAnalysis(data) {
         ${metricCard("Макс. высота", wrist.highest_y)}
         ${metricCard("Досягаемость", formatPercent(wrist.reach_ratio))}
       </div>`;
+  }
+
+  // Булавы: параметры полёта предметов (трекинг)
+  if (clubs.clubs_detected !== undefined) {
+    const throwH = clubs.throw_height || {};
+    const sym = clubs.symmetry || {};
+    const simult = clubs.simultaneity || {};
+    const catchPos = clubs.catch_position || {};
+
+    let clubsHtml = `<h3>🪄 Булавы (трекинг предметов)</h3>
+      <div class="metrics-grid">
+        ${metricCard("Обнаружено булав", clubs.clubs_detected)}
+      </div>`;
+
+    if (throwH.max !== undefined) {
+      clubsHtml += `<div class="metrics-grid">
+        ${metricCard("Высота броска (левая)", throwH.left !== undefined ? throwH.left : "—")}
+        ${metricCard("Высота броска (правая)", throwH.right !== undefined ? throwH.right : "—")}
+      </div>`;
+    }
+
+    if (sym.height_diff !== undefined || simult.peak_frame_diff !== undefined) {
+      clubsHtml += `<div class="metrics-grid">
+        ${metricCard("Симметрия (разница высот)", sym.height_diff !== undefined ? sym.height_diff : "—")}
+        ${metricCard("Одновременность (кадры)", simult.peak_frame_diff !== undefined ? simult.peak_frame_diff : "—")}
+      </div>`;
+    }
+
+    if (catchPos.left || catchPos.right) {
+      const leftPos = catchPos.left ? `(${catchPos.left.x}, ${catchPos.left.y})` : "—";
+      const rightPos = catchPos.right ? `(${catchPos.right.x}, ${catchPos.right.y})` : "—";
+      clubsHtml += `<div class="metrics-grid">
+        ${metricCard("Ловля (левая)", leftPos)}
+        ${metricCard("Ловля (правая)", rightPos)}
+      </div>`;
+    }
+
+    movementHtml += clubsHtml;
   }
 
   if (trajectory.total_distance !== undefined) {
