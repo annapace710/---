@@ -304,6 +304,8 @@ class AthleteTrack:
         self.index = index
         self.torso_angles = []
         self.wrist_heights = []
+        self.wrist_y_left = []   # высота левого запястья по кадрам (для асимметрии подброса)
+        self.wrist_y_right = []  # высота правого запястья по кадрам
         self.com_positions = []
         self.knee_angles_left = []
         self.knee_angles_right = []
@@ -324,6 +326,8 @@ class AthleteTrack:
         """Добавляет кадр: вычисляет все признаки и сохраняет в ряды."""
         self.torso_angles.append(compute_torso_tilt(landmarks))
         self.wrist_heights.append(compute_wrist_height(landmarks))
+        self.wrist_y_left.append(float(landmarks[LANDMARK_LEFT_WRIST].y))
+        self.wrist_y_right.append(float(landmarks[LANDMARK_RIGHT_WRIST].y))
         self.com_positions.append(compute_center_of_mass(landmarks))
         self.knee_angles_left.append(compute_knee_angle(landmarks, "left"))
         self.knee_angles_right.append(compute_knee_angle(landmarks, "right"))
@@ -424,6 +428,8 @@ def compute_deep_metrics(
     ankle_y_right: list = None,
     arm_symmetries: list = None,
     rotation_angles_world: list = None,
+    wrist_y_left: list = None,
+    wrist_y_right: list = None,
 ) -> dict:
     """Агрегирует метрики углублённого анализа движений."""
     result = {}
@@ -443,12 +449,21 @@ def compute_deep_metrics(
     if wrist_heights:
         arr = np.array(wrist_heights)
         highest_y = float(np.min(arr))          # самая верхняя точка запястий
-        result["wrist_height"] = {
+        wrist_metrics = {
             "avg_y": round(float(np.mean(arr)), 3),
             "highest_y": round(highest_y, 3),
             # Доля высоты кадра, на которую поднимались руки (0..1)
             "reach_ratio": round(max(0.0, 1.0 - highest_y), 3),
         }
+        # Высоты каждой руки отдельно: усреднение левого/правого запястья
+        # «размывает» асимметрию, поэтому досягаемость проверяется и по каждой руке
+        for side, side_arr in (("left", wrist_y_left), ("right", wrist_y_right)):
+            if side_arr:
+                s = np.array(side_arr)
+                side_highest_y = float(np.min(s))
+                wrist_metrics[f"{side}_highest_y"] = round(side_highest_y, 3)
+                wrist_metrics[f"{side}_reach_ratio"] = round(max(0.0, 1.0 - side_highest_y), 3)
+        result["wrist_height"] = wrist_metrics
     else:
         result["wrist_height"] = None
 
@@ -716,6 +731,28 @@ def detect_errors_and_recommendations(exercise: str, movement: dict, clubs: dict
                 "Подбрасывайте булавы энергичным движением от плеча, направляя их вверх, "
                 "и добавляйте небольшой подъём на носки для увеличения высоты полёта."
             )
+
+        # Асимметричный подброс: усреднение запястий может маскировать низкий
+        # подброс одной руки, поэтому проверяем досягаемость каждой руки отдельно
+        side_reaches = [
+            (label, wrist.get(f"{side}_reach_ratio"))
+            for side, label in (("left", "левой"), ("right", "правой"))
+        ]
+        for side_label, side_reach in side_reaches:
+            if side_reach is not None and side_reach < thresholds["min_reach_ratio"]:
+                errors.append({
+                    "severity": "critical",
+                    "message": (
+                        f"Подброс недостаточно высокий для {side_label} руки: досягаемость "
+                        f"{_fmt(round(side_reach * 100), '%')} высоты кадра "
+                        f"(нужно не менее {thresholds['min_reach_ratio'] * 100:.0f}%). "
+                        "Булава со стороны этой руки летит ниже."
+                    ),
+                })
+                recommendations.append(
+                    f"Поднимайте {side_label} руку так же высоко, как противоположную, "
+                    "чтобы бросок был симметричным и булавы летели на одной высоте."
+                )
 
         # Кувырок: низкая группировка — таз должен опускаться достаточно низко
         hip_max_y = hip_height.get("max_y")
@@ -1242,6 +1279,8 @@ def analyze_video(video_path: str, exercise: str = "unknown", format_type: str =
             ankle_y_right=track.ankle_y_right,
             arm_symmetries=track.arm_symmetries,
             rotation_angles_world=track.rotation_angles_world,
+            wrist_y_left=track.wrist_y_left,
+            wrist_y_right=track.wrist_y_right,
         )
         athlete_results.append({
             "index": i,

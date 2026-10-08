@@ -107,6 +107,30 @@ class TestDetectErrorsAndRecommendations(unittest.TestCase):
         self.assertIn("critical", severities)
         self.assertTrue(any("Подброс" in e["message"] for e in result["errors"]))
 
+    def test_asymmetric_reach_risk_buhavy(self):
+        """Низкий подброс одной руки должен определяться, даже если среднее выглядит нормальным."""
+        # Средний reach_ratio высокий (0.9), но правая рука поднялась слабо (0.2)
+        movement = self._movement(
+            wrist_height={
+                "avg_y": 0.15, "highest_y": 0.1, "reach_ratio": 0.9,
+                "left_reach_ratio": 0.9, "right_reach_ratio": 0.2,
+            }
+        )
+        result = detect_errors_and_recommendations("risk-buhavy", movement)
+        self.assertTrue(any("правой руки" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(any(e["severity"] == "critical" for e in result["errors"]))
+
+    def test_symmetric_reach_risk_buhavy(self):
+        """Симметричный высокий подброс обеих рук не должен давать ошибок о подбросе."""
+        movement = self._movement(
+            wrist_height={
+                "avg_y": 0.15, "highest_y": 0.1, "reach_ratio": 0.9,
+                "left_reach_ratio": 0.9, "right_reach_ratio": 0.9,
+            }
+        )
+        result = detect_errors_and_recommendations("risk-buhavy", movement)
+        self.assertFalse(any("Подброс" in e["message"] or "руки:" in e["message"] for e in result["errors"]))
+
     def test_low_jump(self):
         """Низкий прыжок должен определяться как критическая ошибка."""
         movement = self._movement(trajectory={"total_distance": 1.0, "x_range": 0.05, "y_range": 0.05})
