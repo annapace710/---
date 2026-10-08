@@ -1,8 +1,9 @@
 import os
 import uuid
 import urllib.request
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response, HTMLResponse
 import cv2  # OpenCV
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
@@ -10,6 +11,8 @@ from mediapipe.tasks.python import vision as mp_vision
 import numpy as np
 
 from club_tracker import ClubTracker, analyze_club_flight, assign_clubs_to_athletes
+import storage
+import report_generator
 
 app = FastAPI()
 
@@ -635,6 +638,36 @@ SEVERITY_PENALTY = {
     "warning": 10,
 }
 
+# Корректирующие упражнения: подсказка по ключевой фразе ошибки -> предлагаемое упражнение.
+# Тренер может дополнить/уточнить формулировки — они выводятся в PDF-карточке.
+SUGGESTED_DRILLS = [
+    ("кувырок", "Перекаты в группировке вперёд-назад, 3×8 повторений"),
+    ("подброс", "Подброс булав от плеча у стены с контролем высоты, 3×10"),
+    ("прыжок слишком низкий", "Прыжки из полуприседа с выпрыгиванием вверх, 3×10"),
+    ("прогиб", "Мостик из положения лёжа и «корзиночка», 2×10"),
+    ("раскрыт", "Шпагаты и складки у опоры, ежедневная растяжка 10 мин"),
+    ("вертикальный отрыв", "Прыжки на скакалке с высокой голенью, 3×30 сек"),
+    ("стопы", "Подъёмы на носки и прыжки «стрелочка» с вытягиванием носков, 3×12"),
+    ("раскачивание", "Стойка на одной ноге с закрытыми глазами у опоры, 3×30 сек"),
+    ("опорн", "Подъёмы на полупальцы одной ноги у опоры, 3×12 на каждую"),
+    ("ось вращения", "Повороты на 180°/360° с фиксацией позы, 3×8"),
+    ("витков", "Пируэты с партнёром-страховкой, постепенно наращивая число витков"),
+    ("асимметричн", "Отработка позиций рук перед зеркалом, 2×10"),
+    ("одновременно", "Синхронный подброс двух булав под счёт, 3×10"),
+    ("разной высоте", "Подброс одной булавы каждой рукой поочерёдно на одинаковую высоту, 3×10"),
+    ("смещена от центра", "Ловля булав с фиксацией рук на оси тела перед зеркалом, 2×10"),
+    ("жёсткая", "Жонглирование/ловля с мягким «доигрыванием» кистью, 3×5 мин"),
+]
+
+
+def _suggested_drill(message: str):
+    """Подбирает корректирующее упражнение по тексту ошибки."""
+    msg = (message or "").lower()
+    for key, drill in SUGGESTED_DRILLS:
+        if key in msg:
+            return drill
+    return None
+
 
 def _fmt(value, suffix=""):
     """Форматирует число для текста рекомендации."""
@@ -1159,12 +1192,129 @@ def detect_errors_and_recommendations(exercise: str, movement: dict, clubs: dict
         else:
             summary = "Техника требует серьёзной доработки. Разберите упражнение по элементам с тренером."
 
+    # Подбираем корректирующее упражнение для каждой ошибки (используется в PDF-отчёте)
+    for e in errors:
+        e["suggested_drill"] = _suggested_drill(e.get("message"))
+
     return {
         "overall_score": overall_score,
         "errors": errors,
         "recommendations": recommendations,
         "summary": summary,
     }
+
+
+def _capture_error_frames(
+    video_path: str,
+    fps: float,
+    frames_with_poses: list,
+    feedback: dict,
+    frames_dir: str,
+) -> dict:
+    """
+    Снимает скриншоты моментов ошибок из видео.
+
+    Для каждой ошибки feedback выбирается кадр из числа анализированных:
+    для ошибок про наклон/кувырок — кадр с максимальным наклоном корпуса,
+    для остальных — равномерно распределённые кадры. На PNG добавляется
+    обводка скелета (координаты landmark'ов сохраняются в результат).
+
+    Возвращает {index: {"path", "timestamp", "landmarks"}}.
+    """
+    result = {}
+    errors = (feedback or {}).get("errors") or []
+    if not errors or not frames_with_poses:
+        return result
+
+    os.makedirs(frames_dir, exist_ok=True)
+
+    # Кадры с одной (целевой) позой — самая крупная гимнастка
+    target_frames = []
+    for idx, (frame, pose_list, _) in enumerate(frames_with_poses):
+        if not pose_list:
+            continue
+        best = max(pose_list, key=_skeleton_size)
+        target_frames.append((idx, frame, best))
+
+    if not target_frames:
+        return result
+
+    # Кадр с максимальным наклоном корпуса (момент кувырка/прогиба)
+    peak_idx = max(
+        range(len(target_frames)),
+        key=lambda i: compute_torso_tilt(target_frames[i][2]),
+        default=None,
+    )
+
+    total = len(errors)
+    for i, _err in enumerate(errors):
+        # Первая (самая серьёзная) ошибка — на пиковом кадре,
+        # остальные — равномерно по видео
+        if peak_idx is not None and i == 0:
+            pick = peak_idx
+        else:
+            pick = int(len(target_frames) * (i + 1) / (total + 1)) % len(target_frames)
+        idx, frame, landmarks = target_frames[pick]
+
+        timestamp = round(idx * (1.0 / max(fps, 1e-6)), 2)
+        frame_png = os.path.join(frames_dir, f"error_{i}.png")
+        cv2.imwrite(frame_png, frame)
+
+        result[i] = {
+            "path": frame_png,
+            "timestamp": timestamp,
+            "landmarks": {
+                j: {"x": float(lm.x), "y": float(lm.y)}
+                for j, lm in enumerate(landmarks)
+                if getattr(lm, "visibility", 1.0) > 0.5
+            },
+        }
+    return result
+
+
+def _build_heatmap(frames_with_poses, heatmap_path: str, width_cells: int = 20, height_cells: int = 12):
+    """
+    Строит тепловую карту позиций гимнасток по площадке (групповой формат).
+
+    Собирает центры скелетов всех гимнасток по кадрам, агрегирует в сетку
+    width_cells × height_cells и сохраняет PNG. Возвращает stats или None.
+    """
+    if not frames_with_poses:
+        return None
+
+    centers = []
+    for _, pose_list, _ in frames_with_poses:
+        for landmarks in pose_list:
+            centers.append(_skeleton_center(landmarks))
+
+    if not centers:
+        return None
+
+    grid = np.zeros((height_cells, width_cells), dtype=float)
+    for cx, cy in centers:
+        col = min(width_cells - 1, max(0, int(cx * width_cells)))
+        row = min(height_cells - 1, max(0, int(cy * height_cells)))
+        grid[row, col] += 1
+
+    total = float(grid.sum())
+    if total <= 0:
+        return None
+
+    # Доля попаданий в «плотные» ячейки, где одновременно сидят >= 4 гимнастки
+    dense_cells = grid >= 4
+    overlap_ratio = float(grid[dense_cells].sum() / total) if dense_cells.any() else 0.0
+    stats = {
+        "peak_density": int(grid.max()),
+        "overlap_ratio": round(overlap_ratio, 3),
+    }
+
+    # Рисуем тепловую карту: JET-палитра, пустые ячейки — тёмный фон
+    normalized = (grid / grid.max() * 255).astype(np.uint8)
+    colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
+    colored = cv2.resize(colored, (480, 270), interpolation=cv2.INTER_NEAREST)
+    colored[normalized == 0] = (30, 30, 30)
+    cv2.imwrite(heatmap_path, colored)
+    return stats
 
 
 def analyze_video(video_path: str, exercise: str = "unknown", format_type: str = "individual") -> dict:
@@ -1341,11 +1491,64 @@ def analyze_video(video_path: str, exercise: str = "unknown", format_type: str =
         "clubs": clubs,
         "feedback": feedback,
         "format": format_type,
+        # Кадры с позами (numpy-массивы): используются для создания отчёта
+        # (скриншоты ошибок, тепловая карта) и удаляются до сериализации ответа
+        "_frames_with_poses": frames_with_poses,
     }
+
+
+async def create_report(
+    analysis: dict,
+    video_path: str,
+    frames_with_poses: list,
+    fps: float,
+    reports_dir: str = storage.REPORTS_DIR,
+) -> dict:
+    """
+    Сохраняет отчёт о тренировке: видео, метаданные, кадры ошибок
+    и тепловую карту (для группового формата). Возвращает документ отчёта.
+    """
+    report_id = storage.create_report_id()
+    report_dir = storage.get_report_dir(report_id, reports_dir)
+    frames_dir = os.path.join(report_dir, "frames")
+
+    analysis["report_id"] = report_id
+
+    # Кадры моментов ошибок (для карточки PDF)
+    error_frames = _capture_error_frames(
+        video_path, fps, frames_with_poses,
+        analysis.get("feedback") or {}, frames_dir,
+    )
+    analysis["error_frames"] = {
+        str(i): {
+            "timestamp": f.get("timestamp"),
+            "landmarks": f.get("landmarks"),
+        }
+        for i, f in error_frames.items()
+    }
+
+    # Тепловая карта (групповой формат): где гимнастки сбиваются в кучу
+    heatmap_stats = None
+    if analysis.get("format") == "group":
+        heatmap_path = os.path.join(frames_dir, "heatmap.png")
+        heatmap_stats = _build_heatmap(frames_with_poses, heatmap_path)
+        if heatmap_stats:
+            analysis["heatmap"] = heatmap_path
+            analysis["heatmap_stats"] = heatmap_stats
+
+    doc = storage.save_report(report_id, analysis, video_path, reports_dir)
+    if heatmap_stats:
+        doc["analysis"]["heatmap"] = os.path.join(
+            storage.get_report_dir(report_id, reports_dir), "frames", "heatmap.png"
+        )
+    doc["error_frames_full"] = error_frames
+    storage.cleanup_old_reports(reports_dir)
+    return doc
 
 
 @app.post("/upload")
 async def upload_video(
+    request: Request,
     video_file: UploadFile = File(...),
     exercise: str = Form("unknown"),
     format_type: str = Form("individual"),
@@ -1369,14 +1572,163 @@ async def upload_video(
 
         # 3. Анализ видео
         analysis = analyze_video(save_path, exercise, format_type)
+
+        # 4. Отчёт: видео сохраняется, кадры ошибок и тепловая карта строятся,
+        #    если анализ был успешным; иначе видео просто удаляется
+        report_id = None
+        if not analysis.get("error") and analysis.get("feedback"):
+            # Кадры ошибок снимаются с тех же кадров, что использовались в анализе
+            frames_with_poses = analysis.pop("_frames_with_poses", [])
+            fps = analysis.get("fps") or 30.0
+            doc = await create_report(analysis, save_path, frames_with_poses, fps)
+            report_id = doc.get("report_id")
+            analysis = doc["analysis"]
+            # Абсолютная ссылка на плеер — используется в PDF для таймкодов
+            analysis["video_url"] = str(request.base_url).rstrip("/") + f"/video-player/{report_id}"
+            storage.update_report_analysis(report_id, analysis)
+        else:
+            if os.path.exists(save_path):
+                os.remove(save_path)
+
         return {
             "message": "Видео получено",
             "file": unique_name,
             "exercise": exercise,
             "format": format_type,
+            "report_id": report_id,
             "analysis": analysis,
         }
     finally:
-        # 4. Очистка временного файла после обработки
+        # Временный файл мог быть перемещён в отчёт; удаляем только если остался
         if os.path.exists(save_path):
             os.remove(save_path)
+
+
+def _get_report_or_none(report_id: str):
+    """Загружает отчёт или возвращает None (для FastAPI 404)."""
+    return storage.get_report(report_id)
+
+
+@app.get("/reports/{report_id}/pdf")
+async def get_report_pdf(report_id: str):
+    """Возвращает PDF-карточку тренировки («Сохранить отчёт»)."""
+    doc = _get_report_or_none(report_id)
+    if doc is None:
+        return {"error": "Отчёт не найден"}
+
+    analysis = doc.get("analysis") or {}
+    report_dir = storage.get_report_dir(report_id)
+    frames_dir = os.path.join(report_dir, "frames")
+
+    # Миниатюра видео: первый кадр, сохранённый во время анализа
+    thumb_path = os.path.join(frames_dir, "thumb.png")
+    if not os.path.exists(thumb_path):
+        video_full_path = os.path.join(report_dir, doc.get("video_file") or "")
+        _save_video_thumbnail(video_full_path, thumb_path)
+
+    # Кадры ошибок (PNG + координаты скелета для обводки)
+    saved_frames = analysis.get("error_frames") or {}
+    error_frames = {}
+    for key, f in saved_frames.items():
+        png_path = os.path.join(frames_dir, f"error_{key}.png")
+        if os.path.exists(png_path):
+            error_frames[int(key)] = {
+                "path": png_path,
+                "timestamp": f.get("timestamp"),
+                "landmarks": f.get("landmarks"),
+            }
+
+    # Предыдущий отчёт по тому же упражнению и формату — для блока динамики
+    previous = storage.find_previous_report(
+        doc.get("exercise"), doc.get("format"), doc.get("created_at") or ""
+    )
+
+    pdf_path = os.path.join(report_dir, "report.pdf")
+    report_generator.build_report_pdf(
+        doc,
+        video_thumb_path=thumb_path if os.path.exists(thumb_path) else None,
+        error_frames=error_frames,
+        previous_meta=previous,
+        output_path=pdf_path,
+    )
+
+    if not os.path.exists(pdf_path):
+        return {"error": "Не удалось сформировать PDF"}
+
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=f"training-report-{report_id[:8]}.pdf",
+    )
+
+
+def _save_video_thumbnail(video_path: str, thumb_path: str) -> None:
+    """Сохраняет первый кадр видео как PNG-миниатюру (кэшируется на диске)."""
+    if os.path.exists(thumb_path) or not video_path or not os.path.exists(video_path):
+        return
+    cap = cv2.VideoCapture(video_path)
+    try:
+        ret, frame = cap.read()
+        if ret:
+            os.makedirs(os.path.dirname(thumb_path), exist_ok=True)
+            cv2.imwrite(thumb_path, frame)
+    finally:
+        cap.release()
+
+
+@app.get("/reports/{report_id}/video")
+async def get_report_video(report_id: str, request: Request, t: float = None):
+    """
+    Раздаёт видео отчёта. Параметр t (секунды) используется фронтенд-плеером
+    для перескока к моменту ошибки по кликабельным таймкодам из PDF.
+    """
+    doc = _get_report_or_none(report_id)
+    if doc is None:
+        return {"error": "Отчёт не найден"}
+    video_path = os.path.join(storage.get_report_dir(report_id), doc.get("video_file") or "")
+    if not os.path.exists(video_path):
+        return {"error": "Видео отчёта не найдено"}
+    return FileResponse(
+        video_path,
+        media_type="video/mp4",
+        filename=os.path.basename(video_path),
+    )
+
+
+@app.get("/reports/{report_id}/frames/{frame_name}")
+async def get_report_frame(report_id: str, frame_name: str):
+    """Раздаёт PNG-кадры отчёта (скриншоты ошибок, тепловая карта)."""
+    if not storage.is_valid_report_id(report_id):
+        return {"error": "Некорректный report_id"}
+    # Имя файла строго ограничено (защита от path traversal)
+    allowed = {"error_0.png", "error_1.png", "error_2.png", "error_3.png", "error_4.png", "heatmap.png", "thumb.png"}
+    if frame_name not in allowed:
+        return {"error": "Кадр не найден"}
+    frame_path = os.path.join(storage.get_report_dir(report_id), "frames", frame_name)
+    if not os.path.exists(frame_path):
+        return {"error": "Кадр не найден"}
+    return FileResponse(frame_path, media_type="image/png")
+
+
+@app.get("/video-player/{report_id}")
+async def video_player(report_id: str, t: float = 0.0):
+    """HTML-плеер видео с автопереходом к таймкоду ошибки (?t=<секунды>)."""
+    doc = _get_report_or_none(report_id)
+    if doc is None:
+        return HTMLResponse("<h1>Отчёт не найден</h1>", status_code=404)
+    html = f"""<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="utf-8"><title>Видео тренировки</title></head>
+<body style="margin:0;background:#111;color:#eee;font-family:sans-serif;text-align:center">
+  <h2 style="padding:12px">Видео тренировки — переход к моменту ошибки</h2>
+  <video id="player" width="960" controls autoplay>
+    <source src="/reports/{report_id}/video" type="video/mp4">
+  </video>
+  <p><a href="/reports/{report_id}/pdf" style="color:#7ab7ff">Скачать PDF-карточку</a></p>
+  <script>
+    const player = document.getElementById("player");
+    player.currentTime = {float(t)};
+  </script>
+  </body>
+</html>"""
+    return HTMLResponse(html)

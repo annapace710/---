@@ -16,6 +16,10 @@ const analyzeBtn = document.getElementById("analyze-btn");
 const resultSection = document.getElementById("result");
 const resultContent = document.getElementById("result-content");
 const statusText = document.getElementById("status-text");
+const saveReportBtn = document.getElementById("save-report-btn");
+
+// ID последнего отчёта (для скачивания PDF-карточки)
+let lastReportId = null;
 
 // Восстанавливаем сохранённый адрес API при загрузке страницы
 const savedApiUrl = localStorage.getItem(API_URL_STORAGE_KEY);
@@ -59,6 +63,8 @@ function resetOutput() {
   resultSection.classList.add("hidden");
   resultContent.innerHTML = "";
   statusText.textContent = "";
+  saveReportBtn.classList.add("hidden");
+  lastReportId = null;
 }
 
 /** Форматирует долю кадров с обнаруженной позой в проценты. */
@@ -398,6 +404,11 @@ form.addEventListener("submit", async function (event) {
     } else {
       renderAnalysis(data);
       statusText.textContent = "✅ Анализ завершён.";
+      // Отчёт сохранён на сервере — показываем кнопку скачивания PDF-карточки
+      lastReportId = data.report_id || null;
+      if (lastReportId) {
+        saveReportBtn.classList.remove("hidden");
+      }
     }
   } catch (err) {
     console.error("Ошибка запроса:", err);
@@ -406,5 +417,34 @@ form.addEventListener("submit", async function (event) {
   } finally {
     analyzeBtn.disabled = false;
     analyzeBtn.textContent = "Проанализировать";
+  }
+});
+
+/** Скачивает PDF-карточку тренировки. */
+saveReportBtn.addEventListener("click", async function () {
+  if (!lastReportId) return;
+  const apiBaseUrl = getApiBaseUrl();
+  saveReportBtn.disabled = true;
+  saveReportBtn.textContent = "⏳ Формируем PDF…";
+  try {
+    const response = await fetch(`${apiBaseUrl}/reports/${lastReportId}/pdf`);
+    if (!response.ok) {
+      throw new Error(`Ошибка сервера (${response.status})`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `training-report-${lastReportId.slice(0, 8)}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    saveReportBtn.textContent = "💾 Сохранить отчёт (PDF)";
+  } catch (err) {
+    console.error("Ошибка скачивания отчёта:", err);
+    saveReportBtn.textContent = "❌ Не удалось сформировать PDF. Проверьте адрес API.";
+  } finally {
+    saveReportBtn.disabled = false;
   }
 });

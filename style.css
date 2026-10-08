@@ -304,6 +304,12 @@ button:disabled {
   margin-top: 24px;
 }
 
+/* Кнопка скачивания PDF-отчёта */
+.save-report {
+  margin-top: 18px;
+  background: linear-gradient(90deg, #2e7d4f, #1f5c38);
+}
+
 .hidden {
   display: none;
 }

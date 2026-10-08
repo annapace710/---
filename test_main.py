@@ -5,6 +5,8 @@ import unittest
 import cv2
 import numpy as np
 
+import storage
+
 # Добавляем корень проекта в путь, чтобы импортировать main
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,6 +25,8 @@ from main import (
     select_target_tracks,
     AthleteTrack,
     track_athletes,
+    _suggested_drill,
+    _build_heatmap,
 )
 from club_tracker import ClubTracker, analyze_club_flight, ClubTrajectory, assign_clubs_to_athletes
 
@@ -643,6 +647,132 @@ class TestAthleteTracking(unittest.TestCase):
         ]
         tracks = track_athletes(frames, 30.0)
         self.assertEqual(len(tracks), 2)
+
+
+class TestSuggestedDrills(unittest.TestCase):
+    """Тесты подбора корректирующего упражнения по тексту ошибки."""
+
+    def test_drill_for_bent_support_leg(self):
+        """Ошибка про опорную ногу → упражнение для стопы/полупальцев."""
+        drill = _suggested_drill("Опорная нога (левая) согнута: угол в колене 120.0°")
+        self.assertIsNotNone(drill)
+        self.assertIn("опоры", drill.lower())
+
+    def test_drill_for_low_throw(self):
+        """Ошибка про низкий подброс → упражнение на подброс булав."""
+        drill = _suggested_drill("Подброс булав недостаточно высокий: руки поднялись лишь на 15%")
+        self.assertIsNotNone(drill)
+        self.assertIn("подброс", drill.lower())
+
+    def test_drill_unknown_error(self):
+        """Для нераспознанного текста упражнения не подбирается (None)."""
+        self.assertIsNone(_suggested_drill("Совершенно непонятная ошибка без ключевых слов"))
+
+
+class TestHeatmap(unittest.TestCase):
+    """Тесты тепловой карты перемещений (групповой формат)."""
+
+    def _pose_with(self, center_x, center_y, scale=0.05):
+        class LM:
+            def __init__(self, x, y):
+                self.x = x
+                self.y = y
+                self.visibility = 1.0
+
+        return [LM(center_x, center_y) for _ in range(33)]
+
+    def test_heatmap_counts_positions(self):
+        """Тепловая карта собирает статистику по центрам скелетов."""
+        frames = [
+            (None, [self._pose_with(0.2, 0.3)] * 5, None),
+            (None, [self._pose_with(0.2, 0.3)] * 5, None),
+        ]
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "heatmap.png")
+            stats = _build_heatmap(frames, path)
+            self.assertIsNotNone(stats)
+            # 5 гимнасток в одной точке два кадра подряд → пик плотности 10
+            self.assertEqual(stats["peak_density"], 10)
+            # Все попадания в «плотную» ячейку (>= 4) → overlap 1.0
+            self.assertEqual(stats["overlap_ratio"], 1.0)
+            self.assertTrue(os.path.exists(path))
+
+    def test_heatmap_empty(self):
+        """Без кадров статистика не строится."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "heatmap.png")
+            stats = _build_heatmap([], path)
+            self.assertIsNone(stats)
+
+
+class TestStorage(unittest.TestCase):
+    """Тесты хранения отчётов."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.reports_dir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_save_and_get_report(self):
+        """Отчёт сохраняется и загружается с видео и метаданными."""
+        import shutil
+        video_path = os.path.join(self._tmp.name, "video.mp4")
+        with open(video_path, "wb") as f:
+            f.write(b"fake video bytes")
+
+        rid = storage.create_report_id()
+        analysis = {"exercise": "balance", "format": "individual", "feedback": {}}
+        storage.save_report(rid, analysis, video_path, self.reports_dir)
+
+        doc = storage.get_report(rid, self.reports_dir)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc["exercise"], "balance")
+        # Видео перемещено в директорию отчёта
+        self.assertTrue(
+            os.path.exists(os.path.join(storage.get_report_dir(rid, self.reports_dir), doc["video_file"]))
+        )
+
+    def test_find_previous_report(self):
+        """Динамика: находится ближайший предыдущий отчёт по упражнению и формату."""
+        rid1 = storage.create_report_id()
+        storage.save_report(
+            rid1,
+            {"exercise": "balance", "format": "individual", "feedback": {},
+             "movement": {"knee_angle": {"left_avg_deg": 150.0, "right_avg_deg": 150.0}}},
+            None,
+            self.reports_dir,
+        )
+        rid2 = storage.create_report_id()
+        storage.save_report(
+            rid2,
+            {"exercise": "balance", "format": "individual", "feedback": {},
+             "movement": {"knee_angle": {"left_avg_deg": 155.0, "right_avg_deg": 155.0}}},
+            None,
+            self.reports_dir,
+        )
+        doc2 = storage.get_report(rid2, self.reports_dir)
+        prev = storage.find_previous_report("balance", "individual", doc2["created_at"], self.reports_dir)
+        self.assertIsNotNone(prev)
+        self.assertEqual(prev["report_id"], rid1)
+
+    def test_invalid_report_id(self):
+        """Подделка report_id (path traversal) отклоняется."""
+        self.assertFalse(storage.is_valid_report_id("../../etc"))
+        self.assertIsNone(storage.get_report("../../etc", self.reports_dir))
+
+    def test_cleanup_old_reports(self):
+        """Отчёты старше срока хранения удаляются."""
+        rid = storage.create_report_id()
+        storage.save_report(rid, {"exercise": "jump", "format": "individual", "feedback": {}}, None, self.reports_dir)
+        # Уменьшаем срок хранения до 0 дней — отчёт должен удалиться
+        removed = storage.cleanup_old_reports(self.reports_dir, retention_days=0)
+        self.assertEqual(removed, 1)
+        self.assertIsNone(storage.get_report(rid, self.reports_dir))
 
 
 if __name__ == "__main__":
