@@ -1308,11 +1308,12 @@ def _build_heatmap(frames_with_poses, heatmap_path: str, width_cells: int = 20, 
         "overlap_ratio": round(overlap_ratio, 3),
     }
 
-    # Рисуем тепловую карту: JET-палитра, пустые ячейки — тёмный фон
+    # Рисуем тепловую карту: JET-палитра, пустые ячейки — тёмный фон.
+    # Маска накладывается ДО resize, иначе размеры массива не совпадут.
     normalized = (grid / grid.max() * 255).astype(np.uint8)
     colored = cv2.applyColorMap(normalized, cv2.COLORMAP_JET)
-    colored = cv2.resize(colored, (480, 270), interpolation=cv2.INTER_NEAREST)
     colored[normalized == 0] = (30, 30, 30)
+    colored = cv2.resize(colored, (480, 270), interpolation=cv2.INTER_NEAREST)
     cv2.imwrite(heatmap_path, colored)
     return stats
 
