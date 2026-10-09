@@ -445,6 +445,20 @@ class TestDetectErrorsAndRecommendations(unittest.TestCase):
         result = detect_errors_and_recommendations("walkover-front", movement)
         self.assertEqual(result["overall_score"], 100)
 
+    def test_walkover_front_drills_always_present(self):
+        """Подводящие упражнения для переворота присутствуют в рекомендациях всегда."""
+        result = detect_errors_and_recommendations("walkover-front", self._walkover_movement())
+        joined = " ".join(result["recommendations"]).lower()
+        for key in ("колесо через одну руку", "перекат вперёд через стойку", "мостик"):
+            self.assertIn(key, joined)
+
+    def test_walkover_front_drills_do_not_affect_score(self):
+        """Подводящие упражнения не искажают оценку: без ошибок остаётся 100 баллов."""
+        result = detect_errors_and_recommendations("walkover-front", self._walkover_movement())
+        self.assertEqual(result["overall_score"], 100)
+        self.assertEqual(result["errors"], [])
+        self.assertGreaterEqual(len(result["recommendations"]), 4)
+
 
 class TestComputeDeepMetricsWristLowestY(unittest.TestCase):
     """Тесты новой агрегированной метрики wrist_height.lowest_y."""
