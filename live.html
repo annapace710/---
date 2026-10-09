@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale.0" />
+  <title>Live-режим — Помощник художественной гимнастики</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    /* Специфичные стили live-режима */
+    .live-layout { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+    .live-video-wrap { position: relative; flex: 1 1 520px; min-width: 320px; }
+    #live-video { width: 100%; border-radius: 12px; background: #111; }
+    #live-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+    .live-side { flex: 0 0 300px; min-width: 280px; }
+    .latency-box { background: #faf8fc; border: 1px solid #eee6f2; border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+    .latency-value { font-size: 1.6rem; font-weight: 800; color: #6b2f7a; }
+    .latency-value.ok { color: #2e7d4f; }
+    .latency-value.bad { color: #d64545; }
+    .live-metric { background: #faf8fc; border: 1px solid #eee6f2; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+    .live-metric .metric-label { display: block; font-size: 0.8rem; color: #9a8faa; }
+    .live-metric .metric-value { font-size: 1.2rem; font-weight: 700; color: #6b2f7a; }
+    .live-alert { background: #fdf0f0; border: 1px solid #f5c6c6; color: #d64545; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-weight: 600; }
+    .live-alert.ok { background: #eefaf1; border-color: #b9e4c4; color: #2e7d4f; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>🤸‍♀️ Live-режим</h1>
+      <p class="subtitle">Анализ в реальном времени с веб-камеры: задержка кадра &lt; 100 мс, звуковая сигнализация</p>
+    </header>
+
+    <main class="card">
+      <div class="live-layout">
+        <div class="live-video-wrap">
+          <video id="live-video" autoplay playsinline muted></video>
+          <canvas id="live-canvas"></canvas>
+        </div>
+
+        <div class="live-side">
+          <div class="form-group">
+            <label for="live-exercise">Упражнение</label>
+            <select id="live-exercise">
+              <option value="balance">Равновесие на одной ноге</option>
+              <option value="rotation">Поворот (пируэт)</option>
+              <option value="jump">Прыжок с прогибом назад</option>
+              <option value="risk-buhavy">Риск с булавами</option>
+          </select>
+        </div>
+
+        <button type="button" id="live-start">▶️ Старт камеры</button>
+        <button type="button" id="live-stop" style="margin-top:8px; background:linear-gradient(90deg,#8e44ad,#6b2f7a)">⏹ Стоп</button>
+
+        <h3 style="margin:16px 0 8px; color:#6b2f7a">⏱ Латентность</h3>
+        <div class="latency-box">
+          <span class="metric-label">Задержка кадра (avg / p95)</span>
+          <div><span id="latency-avg" class="latency-value">—</span> <small>/</small> <span id="latency-p95" class="latency-value">—</span> мс</div>
+          <div id="latency-status" style="font-size:0.85rem; color:#9a8faa">Цель: &lt; 100 мс</div>
+        </div>
+
+        <h3 style="margin:16px 0 8px; color:#6b2f7a">📊 Метрики в реальном времени</h3>
+        <div id="live-metrics"></div>
+
+        <h3 style="margin:16px 0 8px; color:#6b2f7a">🚨 Сигнализация</h3>
+        <div id="live-alerts">
+          <div class="live-alert ok">Ошибок нет — работаем</div>
+        </div>
+
+        <label style="display:flex; align-items:center; gap:8px; margin-top:12px; font-size:0.9rem">
+          <input type="checkbox" id="sound-enabled" checked> 🔊 Звуковая сигнализация
+          <input type="checkbox" id="sound-cooldown" checked style="margin-left:auto"> Кулдаун 3 с
+        </label>
+      </div>
+      </div>
+    </main>
+
+    <p style="margin-top:16px"><a href="index.html">← Вернуться к анализу видео</a></p>
+
+    <footer class="footer">
+      <p>Live-режим выполняется в браузере (MediaPipe Tasks JS, GPU). Видео не покидает устройство.</p>
+    </footer>
+  </div>
+
+  <script type="module">
+    // Live-режим: MediaPipe Tasks JS (PoseLandmarker, LIVE_STREAM, GPU) + правила THRESHOLDS.
+    // Правила — JS-порт ядра detect_errors_and_recommendations (подмножество, см. checkErrors).
+
+    import {
+      FilesetResolver,
+      PoseLandmarker,
+      DrawingUtils
+    } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+    const video = document.getElementById("live-video");
+    const canvas = document.getElementById("live-canvas");
+    const ctx = canvas.getContext("2d");
+    const startBtn = document.getElementById("live-start");
+    const stopBtn = document.getElementById("live-stop");
+    const exerciseSelect = document.getElementById("live-exercise");
+    const latencyAvgEl = document.getElementById("latency-avg");
+    const latencyP95El = document.getElementById("latency-p95");
+    const latencyStatus = document.getElementById("latency-status");
+    const metricsEl = document.getElementById("live-metrics");
+    const alertsEl = document.getElementById("live-alerts");
+    const soundEnabled = document.getElementById("sound-enabled");
+    const soundCooldown = document.getElementById("sound-cooldown");
+
+    let landmarker = null;
+    let running = false;
+    let lastVideoTime = -1;
+    const latencies = [];   // последние N замеров
+    const MAX_LATENCY_SAMPLES = 100;
+    let lastBeepAt = 0;
+
+    // --- Пороги ошибок (синхронизированы с THRESHOLDS в main.py) ---
+    const THRESHOLDS = {
+      balance: {
+        max_com_x_range: 0.10,
+        max_avg_tilt_deg: 10.0,
+        min_knee_extension_deg: 150.0,
+        min_ankle_height_diff: 0.08,
+      },
+      rotation: {
+        max_avg_tilt_deg: 12.0,
+        max_com_x_range: 0.12,
+        max_signed_tilt_deg: 10.0,
+        max_arm_symmetry: 0.10,
+      },
+      jump: {
+        min_backbend_tilt_deg: 35.0,
+      },
+    };
+
+    // --- Звуковой сигнал (Web Audio API, без файлов) ---
+    let audioCtx = null;
+    function beep(frequency = 880, durationMs = 200) {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.frequency.value = frequency;
+      gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + durationMs / 1000);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + durationMs / 1000);
+    }
+
+    // --- Геометрия скелета (порт compute_* из main.py) ---
+    function point(lms, i) { return [lms[i].x, lms[i].y]; }
+
+    function angleBetween(v1, v2) {
+      const n1 = Math.hypot(...v1), n2 = Math.hypot(...v2);
+      if (n1 < 1e-9 || n2 < 1e-9) return 0;
+      const cos = Math.max(-1, Math.min(1, (v1[0]*v2[0] + v1[1]*v2[1]) / (n1*n2)));
+      return Math.acos(cos) * 180 / Math.PI;
+    }
+
+    function computeTorsoTilt(lms) {
+      const sm = [(point(lms,11)[0]+point(lms,12)[0])/2, (point(lms,11)[1]+point(lms,12)[1])/2];
+      const hm = [(point(lms,23)[0]+point(lms,24)[0])/2, (point(lms,23)[1]+point(lms,24)[1])/2];
+      return angleBetween([sm[0]-hm[0], sm[1]-hm[1]], [0, -1]);
+    }
+
+    function computeTorsoTiltSigned(lms) {
+      const sm = [(point(lms,11)[0]+point(lms,12)[0])/2, (point(lms,11)[1]+point(lms,12)[1])/2];
+      const hm = [(point(lms,23)[0]+point(lms,24)[0])/2, (point(lms,23)[1]+point(lms,24)[1])/2];
+      const vx = sm[0]-hm[0], vy = sm[1]-hm[1];
+      return Math.max(-90, Math.min(90, Math.atan2(-vx, -vy) * 180 / Math.PI));
+    }
+
+    function computeKneeAngle(lms, side) {
+      const [h, k, a] = side === "left" ? [point(lms,23), point(lms,25), point(lms,27)]
+                                        : [point(lms,24), point(lms,26), point(lms,28)];
+      return angleBetween([h[0]-k[0], h[1]-k[1]], [a[0]-k[0], a[1]-k[1]]);
+    }
+
+    function computeAnkleY(lms, side) {
+      return side === "left" ? lms[27].y : lms[28].y;
+    }
+
+    function computeArmSymmetry(lms) {
+      return Math.abs(lms[15].y - lms[16].y);
+    }
+
+    function computeComX(lms) {
+      // Приближение центра масс X по видимым точкам (для размаха за окно)
+      let sx = 0, n = 0;
+      for (const lm of lms) {
+        if ((lm.visibility ?? 1) > 0.5) { sx += lm.x; n++; }
+      }
+      return n ? sx / n : 0.5;
+    }
+
+    // --- Проверка правил (порт detect_errors_and_recommendations, live-подмножество) ---
+    function checkErrors(exercise, state) {
+      const errors = [];
+      const t = THRESHOLDS[exercise] || {};
+      if (exercise === "balance") {
+        if (state.comXRange !== null && state.comXRange > t.max_com_x_range) {
+          errors.push("Раскачивание: размах центра масс " + state.comXRange.toFixed(2));
+        }
+        if (state.avgTilt > t.max_avg_tilt_deg) {
+          errors.push("Корпус наклонён: " + state.avgTilt.toFixed(0) + "°");
+        }
+        if (state.supportKnee !== null && state.supportKnee < t.min_knee_extension_deg) {
+          errors.push("Опорная нога согнута: " + state.supportKnee.toFixed(0) + "°");
+        }
+      } else if (exercise === "rotation") {
+        if (state.avgTilt > t.max_avg_tilt_deg) {
+          errors.push("Ось вращения завалена: " + state.avgTilt.toFixed(0) + "°");
+        }
+        if (Math.abs(state.signedTilt) > t.max_signed_tilt_deg) {
+          errors.push("Ось систематически завалена: " + state.signedTilt.toFixed(0) + "°");
+        }
+        if (state.armSymmetry > t.max_arm_symmetry) {
+          errors.push("Руки асимметричны: " + state.armSymmetry.toFixed(3));
+        }
+      } else if (exercise === "jump") {
+        if (state.maxTilt < t.min_backbend_tilt_deg) {
+          errors.push("Недостаточный прогиб: " + state.maxTilt.toFixed(0) + "°");
+        }
+      }
+      return errors;
+    }
+
+    // --- Скользящее окно метрик (~1 с) ---
+    const WINDOW_MS = 1000;
+    let windowTilt = [], windowSigned = [], windowComX = [], windowStart = 0;
+
+    function resetWindow(now) {
+      windowTilt = []; windowSigned = []; windowComX = []; windowStart = now;
+    }
+
+    // --- Цикл детекции ---
+    function renderLoop() {
+      if (!running) return;
+      const now = performance.now();
+
+      if (video.currentTime !== lastVideoTime) {
+        lastVideoTime = video.currentTime;
+        const t0 = performance.now();
+        const result = landmarker.detectForVideo(video, now);
+        const dt = performance.now() - t0;
+        latencies.push(dt);
+        if (latencies.length > MAX_LATENCY_SAMPLES) latencies.shift();
+
+        // Обновление латентности на экране (avg/p95 по последним замерам)
+        const sorted = [...latencies].sort((a, b) => a - b);
+        const avg = latencies.reduce((a, b) => a + b, 0) / latencies.length;
+        const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? sorted[sorted.length - 1];
+        latencyAvgEl.textContent = avg.toFixed(1);
+        latencyP95El.textContent = p95.toFixed(1);
+        latencyAvgEl.className = "latency-value " + (avg < 100 ? "ok" : "bad");
+        latencyP95El.className = "latency-value " + (p95 < 100 ? "ok" : "bad");
+        latencyStatus.textContent = p95 < 100 ? "✅ Цель < 100 мс выполняется" : "⚠️ Цель < 100 мс не выполняется";
+
+        if (result.landmarks && result.landmarks.length > 0) {
+          const lms = result.landmarks[0];  // целевая гимнастка — самая крупная поза
+          const now2 = performance.now();
+          if (now2 - windowStart > WINDOW_MS) resetWindow(now2);
+          windowTilt.push(computeTorsoTilt(lms));
+          windowSigned.push(computeTorsoTiltSigned(lms));
+          windowComX.push(computeComX(lms));
+
+          const state = {
+            avgTilt: windowTilt.reduce((a,b)=>a+b,0) / windowTilt.length,
+            maxTilt: Math.max(...windowTilt),
+            signedTilt: windowSigned.reduce((a,b)=>a+b,0) / windowSigned.length,
+            armSymmetry: computeArmSymmetry(lms),
+            comXRange: windowComX.length > 1 ? Math.max(...windowComX) - Math.min(...windowComX) : null,
+            supportKnee: null,
+          };
+
+          // Опорная нога: ниже лодыжка — опорная; проверяем её колено
+          const dL = computeAnkleY(lms, "left"), dR = computeAnkleY(lms, "right");
+          if (Math.abs(dL - dR) > 0.08) {
+            state.supportKnee = computeKneeAngle(lms, dL > dR ? "left" : "right");
+          }
+
+          // Отрисовка скелета
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const drawing = new DrawingUtils(ctx);
+          for (const lm of result.landmarks) {
+            drawing.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS, { color: "#6b2f7a", lineWidth: 3 });
+            drawing.drawLandmarks(lm, { color: "#a86bc0", lineWidth: 1, radius: 3 });
+          }
+
+          // Правила + сигнализация
+          const exercise = exerciseSelect.value;
+          const errors = checkErrors(exercise, state);
+
+          metricsEl.innerHTML = `
+            <div class="live-metric"><span class="metric-label">Наклон корпуса (ср.)</span><span class="metric-value">${state.avgTilt.toFixed(1)}°</span></div>
+            <div class="live-metric"><span class="metric-label">Наклон со знаком</span><span class="metric-value">${state.signedTilt.toFixed(1)}°</span></div>
+            <div class="live-metric"><span class="label">Размах центра масс</span><span class="metric-value">${state.comXRange !== null ? state.comXRange.toFixed(3) : "—"}</span></div>
+            <div class="live-metric"><span class="metric-label">Симметрия рук</span><span class="metric-value">${state.armSymmetry.toFixed(3)}</span></div>
+            ${state.supportKnee !== null ? `<div class="live-metric"><span class="metric-label">Колено опорной ноги</span><span class="metric-value">${state.supportKnee.toFixed(0)}°</span></div>` : ""}`;
+
+          if (errors.length > 0) {
+            alertsEl.innerHTML = errors.map(e => `<div class="live-alert">🚨 ${e}</div>`).join("");
+            const nowMs = Date.now();
+            if (soundEnabled.checked && (!soundCooldown.checked || nowMs - lastBeepAt > 3000)) {
+              beep(880, 200);
+              lastBeepAt = nowMs;
+            }
+          } else {
+            alertsEl.innerHTML = `<div class="live-alert ok">✅ Ошибок нет — работаем</div>`;
+          }
+        }
+      }
+      requestAnimationFrame(renderLoop);
+    }
+
+    // --- Старт/стоп камеры ---
+    startBtn.addEventListener("click", async () => {
+      startBtn.disabled = true;
+      try {
+        const vision = await FilesetResolver.forVisionTasks(
+          "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+        );
+        landmarker = await PoseLandmarker.createFromOptions(vision, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+            delegate: "GPU"
+          },
+          runningMode: "LIVE_STREAM",
+          numPoses: 1,
+        });
+
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+        video.srcObject = stream;
+        await video.play();
+
+        running = true;
+        resetWindow(performance.now());
+        latencies.length = 0;
+        requestAnimationFrame(renderLoop);
+        startBtn.textContent = "✅ Работает";
+      } catch (err) {
+        console.error(err);
+        startBtn.textContent = "❌ Ошибка доступа к камере";
+      }
+      startBtn.disabled = false;
+    });
+
+    stopBtn.addEventListener("click", () => {
+      running = false;
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(t => t.stop());
+        video.srcObject = null;
+      }
+      startBtn.textContent = "▶️ Старт камеры";
+    });
+  </script>
+</body>
+</html>

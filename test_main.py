@@ -27,6 +27,7 @@ from main import (
     track_athletes,
     _suggested_drill,
     _build_heatmap,
+    _latency_stats,
 )
 from club_tracker import ClubTracker, analyze_club_flight, ClubTrajectory, assign_clubs_to_athletes
 
@@ -705,6 +706,23 @@ class TestHeatmap(unittest.TestCase):
             path = os.path.join(tmp, "heatmap.png")
             stats = _build_heatmap([], path)
             self.assertIsNone(stats)
+
+
+class TestLatencyStats(unittest.TestCase):
+    """Тесты статистики латентности обработки кадра."""
+
+    def test_latency_stats_values(self):
+        """avg, p95 и max считаются корректно."""
+        stats = _latency_stats([10.0, 20.0, 30.0, 40.0, 100.0])
+        self.assertEqual(stats["samples"], 5)
+        self.assertEqual(stats["avg_ms"], 40.0)
+        self.assertEqual(stats["max_ms"], 100.0)
+        self.assertLessEqual(stats["p95_ms"], 100.0)
+        self.assertGreaterEqual(stats["p95_ms"], 40.0)
+
+    def test_latency_stats_empty(self):
+        """Без замеров статистика пустая."""
+        self.assertIsNone(_latency_stats([]))
 
 
 class TestStorage(unittest.TestCase):
