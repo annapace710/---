@@ -163,6 +163,7 @@ function renderAnalysis(data) {
         ${metricCard("Средняя высота", wrist.avg_y)}
         ${metricCard("Макс. высота", wrist.highest_y)}
         ${metricCard("Досягаемость", formatPercent(wrist.reach_ratio))}
+        ${metricCard("Нижняя точка (Y)", wrist.lowest_y !== undefined ? wrist.lowest_y : "—")}
       </div>`;
   }
 

@@ -25,6 +25,7 @@ from main import (
     select_target_tracks,
     AthleteTrack,
     track_athletes,
+    compute_deep_metrics,
     _suggested_drill,
     _build_heatmap,
     _latency_stats,
@@ -362,6 +363,112 @@ class TestDetectErrorsAndRecommendations(unittest.TestCase):
         )
         result = detect_errors_and_recommendations("balance", movement)
         self.assertFalse(any("опорн" in e["message"].lower() for e in result["errors"]))
+
+    # --- Переворот вперёд (walkover-front) ---
+
+    def _walkover_movement(self, **overrides):
+        """Базовые метрики идеального переворота вперёд (без ошибок)."""
+        movement = {
+            "torso_tilt": {"avg_deg": 100.0, "max_deg": 170.0, "min_deg": 10.0},
+            "wrist_height": {
+                "avg_y": 0.45, "highest_y": 0.1, "reach_ratio": 0.9,
+                "lowest_y": 0.9,
+            },
+            "trajectory": {"total_distance": 2.5, "x_range": 0.4, "y_range": 0.6},
+            "motion": {"avg_speed": 0.15, "max_speed": 0.4, "smoothness": 0.85, "jerk_count": 5},
+            "knee_angle": {"left_avg_deg": 175.0, "right_avg_deg": 174.0,
+                           "left_min_deg": 170.0, "right_min_deg": 168.0},
+            "leg_opening": {"max_deg": 170.0, "avg_deg": 120.0},
+        }
+        movement.update(overrides)
+        return movement
+
+    def test_perfect_walkover_front(self):
+        """Идеальный переворот вперёд: 100 баллов, ошибок нет."""
+        result = detect_errors_and_recommendations("walkover-front", self._walkover_movement())
+        self.assertEqual(result["overall_score"], 100)
+        self.assertEqual(result["errors"], [])
+        self.assertTrue(result["recommendations"])
+
+    def test_shallow_pass_walkover_front(self):
+        """Проход без стойки на руках (наклон < 150°) — критическая ошибка."""
+        movement = self._walkover_movement(
+            torso_tilt={"avg_deg": 80.0, "max_deg": 120.0, "min_deg": 10.0}
+        )
+        result = detect_errors_and_recommendations("walkover-front", movement)
+        self.assertTrue(any("стойку на руках" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(any(e["severity"] == "critical" for e in result["errors"]))
+        self.assertLess(result["overall_score"], 100)
+
+    def test_hands_not_down_walkover_front(self):
+        """Руки не опускаются до пола (lowest_y < 0.70) — критическая ошибка."""
+        movement = self._walkover_movement(
+            wrist_height={"avg_y": 0.4, "highest_y": 0.1, "reach_ratio": 0.9, "lowest_y": 0.55}
+        )
+        result = detect_errors_and_recommendations("walkover-front", movement)
+        self.assertTrue(any("не опускаются до пола" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(any(e["severity"] == "critical" for e in result["errors"]))
+
+    def test_narrow_split_walkover_front(self):
+        """Недостаточный шпагат при проходе (раскрытие < 150°) — замечание."""
+        movement = self._walkover_movement(
+            leg_opening={"max_deg": 110.0, "avg_deg": 70.0}
+        )
+        result = detect_errors_and_recommendations("walkover-front", movement)
+        self.assertTrue(any("раскрыт" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(any(e["severity"] == "warning" for e in result["errors"]))
+
+    def test_bent_legs_walkover_front(self):
+        """Согнутые ноги при проходе (мин. угол в колене < 150°) — замечание."""
+        movement = self._walkover_movement(
+            knee_angle={"left_avg_deg": 165.0, "right_avg_deg": 160.0,
+                        "left_min_deg": 130.0, "right_min_deg": 155.0}
+        )
+        result = detect_errors_and_recommendations("walkover-front", movement)
+        self.assertTrue(any("согнуты в коленях" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(any(e["severity"] == "warning" for e in result["errors"]))
+
+    def test_jerky_exit_walkover_front(self):
+        """Рывки при выходе из переворота (jerk_count > 15) — замечание."""
+        movement = self._walkover_movement(
+            motion={"avg_speed": 0.2, "max_speed": 0.5, "smoothness": 0.4, "jerk_count": 25}
+        )
+        result = detect_errors_and_recommendations("walkover-front", movement)
+        self.assertTrue(any("резкий" in e["message"].lower() for e in result["errors"]))
+        self.assertTrue(any(e["severity"] == "warning" for e in result["errors"]))
+
+    def test_walkover_front_no_leg_data(self):
+        """Если данных о ногах нет — переворот оценивается только по корпусу и рукам."""
+        movement = self._walkover_movement()
+        movement.pop("leg_opening")
+        movement.pop("knee_angle")
+        result = detect_errors_and_recommendations("walkover-front", movement)
+        self.assertEqual(result["overall_score"], 100)
+
+
+class TestComputeDeepMetricsWristLowestY(unittest.TestCase):
+    """Тесты новой агрегированной метрики wrist_height.lowest_y."""
+
+    def test_lowest_y_present(self):
+        """lowest_y — максимальное значение y запястий (самая нижняя точка)."""
+        wrist_heights = [0.3, 0.2, 0.5, 0.4]
+        result = compute_deep_metrics(
+            [10.0, 20.0], wrist_heights, [(0.5, 0.5), (0.5, 0.5)], 30.0,
+        )
+        wrist = result["wrist_height"]
+        self.assertEqual(wrist["lowest_y"], 0.5)
+
+    def test_lowest_y_with_per_hand_fields(self):
+        """По-рукавные поля (left_highest_y и т.д.) не ломаются добавлением lowest_y."""
+        result = compute_deep_metrics(
+            [10.0, 20.0], [0.3, 0.4], [(0.5, 0.5), (0.5, 0.5)], 30.0,
+            wrist_y_left=[0.25, 0.45],
+            wrist_y_right=[0.35, 0.35],
+        )
+        wrist = result["wrist_height"]
+        self.assertEqual(wrist["lowest_y"], 0.4)
+        self.assertEqual(wrist["left_highest_y"], 0.25)
+        self.assertEqual(wrist["right_highest_y"], 0.35)
 
 
 class _Landmark:

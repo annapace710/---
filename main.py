@@ -467,6 +467,9 @@ def compute_deep_metrics(
                 side_highest_y = float(np.min(s))
                 wrist_metrics[f"{side}_highest_y"] = round(side_highest_y, 3)
                 wrist_metrics[f"{side}_reach_ratio"] = round(max(0.0, 1.0 - side_highest_y), 3)
+        # Самая низкая точка запястий за всё видео: признак «руки опущены на пол»
+        # (переворот вперёд — постановка рук на опору перед проходом)
+        wrist_metrics["lowest_y"] = round(float(np.max(arr)), 3)
         result["wrist_height"] = wrist_metrics
     else:
         result["wrist_height"] = None
@@ -631,6 +634,13 @@ THRESHOLDS = {
         "min_turns": 1.0,            # ожидаемое минимальное число витков
         "max_jerk_count": 20,        # допустимое число рывков при вращении
     },
+    "walkover-front": {
+        "min_pass_tilt_deg": 150.0,    # полный проход через стойку на руках (макс. наклон корпуса)
+        "min_split_deg": 150.0,        # раскрытие ног (шпагат) при проходе над головой
+        "min_leg_straight_deg": 150.0, # прямые ноги при проходе (мин. угол в колене)
+        "min_hands_down_y": 0.70,      # руки должны опуститься до пола (0..1, чем больше — тем ниже)
+        "max_jerk_count": 15,          # допустимое число рывков при выходе из переворота
+    },
 }
 
 # Штрафы за ошибки (используются для расчёта общей оценки)
@@ -658,6 +668,10 @@ SUGGESTED_DRILLS = [
     ("разной высоте", "Подброс одной булавы каждой рукой поочерёдно на одинаковую высоту, 3×10"),
     ("смещена от центра", "Ловля булав с фиксацией рук на оси тела перед зеркалом, 2×10"),
     ("жёсткая", "Жонглирование/ловля с мягким «доигрыванием» кистью, 3×5 мин"),
+    ("стойку на руках", "Стойка на руках у стены с выходом в вертикаль, 4×15 сек"),
+    ("не опускаются до пола", "Наклоны вперёд с постановкой рук на пол и переносом веса на руки, 3×8"),
+    ("согнуты в коленях", "Махи ногами с выпрямленными коленями и растяжка под шпагат, 3×10"),
+    ("резкий", "Плавные приземления из стойки на руках с амортизацией в колене, 3×8"),
 ]
 
 
@@ -1170,6 +1184,91 @@ def detect_errors_and_recommendations(exercise: str, movement: dict, clubs: dict
             recommendations.append(
                 "Работайте руками равномерно, не «замирайте» между витками — "
                 "вращение должно быть непрерывным."
+            )
+
+    # --- Переворот вперёд ---
+    elif exercise == "walkover-front":
+        # Проход через стойку на руках: корпус должен пройти через вертикаль
+        max_tilt = torso.get("max_deg")
+        if max_tilt is not None and max_tilt < thresholds["min_pass_tilt_deg"]:
+            errors.append({
+                "severity": "critical",
+                "message": (
+                    f"Проход через стойку на руках недостаточно вертикальный: максимальный "
+                    f"наклон корпуса {_fmt(max_tilt, '°')} (нужно не менее "
+                    f"{thresholds['min_pass_tilt_deg']:.0f}°). Переворот выполнен «низко»."
+                ),
+            })
+            recommendations.append(
+                "Отрабатывайте стойку на руках у стены и заход в переворот махом, "
+                "чтобы корпус проходил через вертикаль."
+            )
+
+        # Руки должны опуститься до пола: опора перед проходом
+        lowest_y = wrist.get("lowest_y")
+        if lowest_y is not None and lowest_y < thresholds["min_hands_down_y"]:
+            errors.append({
+                "severity": "critical",
+                "message": (
+                    f"Руки не опускаются до пола: самая низкая точка запястий "
+                    f"{_fmt(lowest_y)} высоты кадра (нужно не менее "
+                    f"{thresholds['min_hands_down_y']}). Опора под руки недостаточно глубокая."
+                ),
+            })
+            recommendations.append(
+                "Наклоняйтесь глубже вперёд и ставьте руки на пол ближе к линии ног, "
+                "чтобы перевернуться через руки, а не «провисать» в наклоне."
+            )
+
+        # Раскрытие ног (шпагат) при проходе над головой
+        opening_max = leg_opening.get("max_deg")
+        if opening_max is not None and opening_max < thresholds["min_split_deg"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Ноги раскрыты недостаточно широко: максимальный угол раскрытия "
+                    f"{_fmt(opening_max, '°')} (нужно не менее "
+                    f"{thresholds['min_split_deg']:.0f}°). Проход над головой «согнутый»."
+                ),
+            })
+            recommendations.append(
+                "В перевороте тяните ноги в шпагат: активнее разводите их в стороны "
+                "и тяните носки, пока корпус идёт через стойку."
+            )
+
+        # Прямые ноги: минимальный угол в колене за всё видео
+        knee_mins = [
+            v for v in (knee.get("left_min_deg"), knee.get("right_min_deg"))
+            if v is not None
+        ]
+        min_knee = min(knee_mins) if knee_mins else None
+        if min_knee is not None and min_knee < thresholds["min_leg_straight_deg"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Ноги согнуты в коленях при проходе: минимальный угол в колене "
+                    f"{_fmt(min_knee, '°')} (нужно не менее "
+                    f"{thresholds['min_leg_straight_deg']:.0f}°)."
+                ),
+            })
+            recommendations.append(
+                "Держите ноги прямыми на протяжении всего переворота: тяните колени "
+                "и носки, не сгибайте колени при махе."
+            )
+
+        # Плавность выхода из переворота
+        jerk_count = motion.get("jerk_count")
+        if jerk_count is not None and jerk_count > thresholds["max_jerk_count"]:
+            errors.append({
+                "severity": "warning",
+                "message": (
+                    f"Выход из переворота резкий: зафиксировано {jerk_count} рывков "
+                    f"(допустимо не более {thresholds['max_jerk_count']})."
+                ),
+            })
+            recommendations.append(
+                "Плавно завершайте переворот: приземляйтесь на маховую ногу "
+                "с амортизацией в колене и сразу поднимайтесь в стойку."
             )
 
     # --- Общая оценка и итоговая рекомендация ---
