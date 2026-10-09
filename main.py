@@ -1,4 +1,5 @@
 import os
+import time
 import uuid
 import urllib.request
 from fastapi import FastAPI, File, Form, UploadFile, Request
@@ -1318,6 +1319,22 @@ def _build_heatmap(frames_with_poses, heatmap_path: str, width_cells: int = 20, 
     return stats
 
 
+def _latency_stats(frame_latencies_ms: list) -> dict:
+    """
+    Статистика латентности обработки кадра (мс): средняя, p95, максимум.
+    Используется для контроля требований realtime («задержка кадра < 100 мс»).
+    """
+    if not frame_latencies_ms:
+        return None
+    arr = np.array(frame_latencies_ms)
+    return {
+        "avg_ms": round(float(np.mean(arr)), 2),
+        "p95_ms": round(float(np.percentile(arr, 95)), 2),
+        "max_ms": round(float(np.max(arr)), 2),
+        "samples": len(frame_latencies_ms),
+    }
+
+
 def analyze_video(video_path: str, exercise: str = "unknown", format_type: str = "individual") -> dict:
     """
     Анализирует видео с помощью MediaPipe PoseLandmarker (Tasks API):
@@ -1339,6 +1356,8 @@ def analyze_video(video_path: str, exercise: str = "unknown", format_type: str =
 
     frames_analyzed = 0
     pose_detections = 0
+    # Замер латентности обработки кадра (мс): для контроля требований realtime
+    frame_latencies_ms = []
 
     # Кадры с позами всех обнаруженных людей (для построения треков гимнасток)
     frames_with_poses = []
@@ -1364,6 +1383,7 @@ def analyze_video(video_path: str, exercise: str = "unknown", format_type: str =
                 break
 
             if frame_idx % frame_interval == 0:
+                frame_start = time.perf_counter()
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 timestamp_ms = int(frame_idx * 1000 / fps) if fps else 0
@@ -1379,6 +1399,8 @@ def analyze_video(video_path: str, exercise: str = "unknown", format_type: str =
                     pose_detections += 1
                     frames_with_poses.append((frame, pose_list, world_list))
 
+                # Латентность обработки кадра (детекция позы + булавы), мс
+                frame_latencies_ms.append((time.perf_counter() - frame_start) * 1000.0)
                 frames_analyzed += 1
 
             frame_idx += 1
@@ -1396,6 +1418,7 @@ def analyze_video(video_path: str, exercise: str = "unknown", format_type: str =
             "frames_analyzed": frames_analyzed,
             "pose_detections": pose_detections,
             "pose_presence": round(pose_detections / max(frames_analyzed, 1), 3),
+            "latency": _latency_stats(frame_latencies_ms),
             "movement": None,
             "athletes": [],
             "clubs": None,
@@ -1487,6 +1510,7 @@ def analyze_video(video_path: str, exercise: str = "unknown", format_type: str =
         "frames_analyzed": frames_analyzed,
         "pose_detections": pose_detections,
         "pose_presence": round(pose_detections / max(frames_analyzed, 1), 3),
+        "latency": _latency_stats(frame_latencies_ms),
         "movement": first_movement if first_movement else None,
         "athletes": athletes_output,
         "clubs": clubs,
@@ -1573,6 +1597,15 @@ async def upload_video(
 
         # 3. Анализ видео
         analysis = analyze_video(save_path, exercise, format_type)
+
+        # Логирование латентности: контроль бюджета обработки кадра
+        latency = analysis.get("latency")
+        if latency:
+            print(
+                f"[latency] file={unique_name} exercise={exercise} format={format_type} "
+                f"avg={latency['avg_ms']}ms p95={latency['p95_ms']}ms "
+                f"max={latency['max_ms']}ms samples={latency['samples']}"
+            )
 
         # 4. Отчёт: видео сохраняется, кадры ошибок и тепловая карта строятся,
         #    если анализ был успешным; иначе видео просто удаляется
