@@ -15,6 +15,8 @@
 
 from datetime import datetime
 
+import storage
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
@@ -316,6 +318,33 @@ def build_report_pdf(
                 f"Общая оценка {direction} на {abs(delta)} балл(ов) по сравнению с {prev_date}",
             )
             y -= 5.5 * mm
+
+        # Тренд критических ошибок (pre/post-контроль по данным детектора)
+        try:
+            trend = storage.error_trend(exercise, fmt, k=2)
+        except Exception:
+            trend = None
+        if trend and trend.get("sessions", 0) >= 4:
+            early = trend.get("early_avg_critical")
+            late = trend.get("late_avg_critical")
+            delta_pct = trend.get("delta_pct")
+            if delta_pct is not None and delta_pct < 0:
+                trend_text = (
+                    f"Критических ошибок: {early} → {late} "
+                    f"({abs(delta_pct)}% меньше за {trend['sessions']} тренировок)"
+                )
+            elif delta_pct is not None:
+                trend_text = (
+                    f"Критических ошибок: {early} → {late} "
+                    f"(+{delta_pct}% за {trend['sessions']} тренировок)"
+                )
+            else:
+                trend_text = (
+                    f"Критических ошибок: {early} → {late} "
+                    f"за {trend['sessions']} тренировок"
+                )
+            c.drawString(16 * mm, y, trend_text)
+            y -= 5 * mm
 
         for line in _compare_metric_lines(
             analysis.get("movement") or {},

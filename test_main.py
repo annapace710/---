@@ -979,5 +979,70 @@ class TestStorage(unittest.TestCase):
         self.assertIsNone(storage.get_report(rid, self.reports_dir))
 
 
+class TestErrorTrend(unittest.TestCase):
+    """Тесты тренда критических ошибок (pre/post-контроль по данным детектора)."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.reports_dir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _save_session(self, exercise: str, critical: int, warning: int = 0):
+        rid = storage.create_report_id()
+        errors = (
+            [{"severity": "critical", "message": "e"}] * critical
+            + [{"severity": "warning", "message": "w"}] * warning
+        )
+        storage.save_report(
+            rid,
+            {"exercise": exercise, "format": "individual",
+             "feedback": {"errors": errors, "overall_score": 100 - critical * 25}},
+            None,
+            self.reports_dir,
+        )
+
+    def test_error_trend_improvement(self):
+        """Ранние сессии с большим числом critical, поздние с меньшим → тренд вниз."""
+        for _ in range(3):
+            self._save_session("balance", critical=3)
+        for _ in range(3):
+            self._save_session("balance", critical=1)
+        trend = storage.error_trend("balance", "individual", k=3, reports_dir=self.reports_dir)
+        self.assertIsNotNone(trend)
+        self.assertEqual(trend["sessions"], 6)
+        self.assertEqual(trend["early_avg_critical"], 3.0)
+        self.assertEqual(trend["late_avg_critical"], 1.0)
+        self.assertLess(trend["delta_pct"], 0)
+
+    def test_error_trend_insufficient_sessions(self):
+        """Меньше 2*k сессий → тренд не считается (None)."""
+        self._save_session("balance", critical=2)
+        self.assertIsNone(storage.error_trend("balance", "individual", k=3, reports_dir=self.reports_dir))
+
+    def test_error_trend_filters_by_exercise_and_format(self):
+        """Отчёты по другим упражнениям/форматам не учитываются."""
+        for _ in range(3):
+            self._save_session("balance", critical=2)
+        for _ in range(3):
+            self._save_session("jump", critical=5)
+        trend = storage.error_trend("balance", "individual", k=3, reports_dir=self.reports_dir)
+        self.assertIsNotNone(trend)
+        self.assertEqual(trend["early_avg_critical"], 2.0)
+        self.assertEqual(trend["late_avg_critical"], 2.0)
+
+    def test_error_trend_zero_early(self):
+        """Если в ранних сессиях ноль critical — delta_pct равен None (деление на ноль)."""
+        for _ in range(3):
+            self._save_session("balance", critical=0)
+        for _ in range(3):
+            self._save_session("balance", critical=2)
+        trend = storage.error_trend("balance", "individual", k=3, reports_dir=self.reports_dir)
+        self.assertIsNotNone(trend)
+        self.assertIsNone(trend["delta_pct"])
+
+
 if __name__ == "__main__":
     unittest.main()

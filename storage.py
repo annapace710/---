@@ -136,6 +136,63 @@ def find_previous_report(
     return best
 
 
+def error_trend(
+    exercise: str,
+    format_type: str,
+    k: int = 3,
+    reports_dir: str = REPORTS_DIR,
+):
+    """
+    Тренд числа критических ошибок по данным детектора (pre/post-контроль).
+
+    Собирает отчёты по упражнению и формату, сортирует по времени и сравнивает
+    среднее число critical-ошибок в первых k сессиях с последними k сессиями.
+
+    Возвращает None, если сессий меньше 2*k (недостаточно данных для тренда), иначе:
+    {
+        "sessions": int,               # всего сессий
+        "window_k": k,
+        "early_avg_critical": float,   # среднее число critical в первых k сессиях
+        "late_avg_critical": float,    # среднее число critical в последних k сессиях
+        "delta_pct": float | None,     # изменение в % (отрицательное = улучшение)
+    }
+
+    ⚠️ Тренд измеряет снижение срабатываний детектора, а не доказанное снижение
+    реальных ошибок техники: валидация правил против экспертизы тренера не проводилась.
+    """
+    if not os.path.isdir(reports_dir):
+        return None
+
+    sessions = []
+    for entry in os.listdir(reports_dir):
+        doc = get_report(entry, reports_dir)
+        if not doc or doc.get("exercise") != exercise or doc.get("format") != format_type:
+            continue
+        feedback = (doc.get("analysis") or {}).get("feedback") or {}
+        critical = sum(
+            1 for e in (feedback.get("errors") or [])
+            if e.get("severity") == "critical"
+        )
+        sessions.append(((doc.get("created_at") or ""), critical))
+
+    if len(sessions) < 2 * k:
+        return None
+
+    sessions.sort(key=lambda s: s[0])
+    early = [c for _, c in sessions[:k]]
+    late = [c for _, c in sessions[-k:]]
+    early_avg = round(sum(early) / k, 2)
+    late_avg = round(sum(late) / k, 2)
+    delta_pct = round((late_avg - early_avg) / early_avg * 100, 1) if early_avg > 0 else None
+    return {
+        "sessions": len(sessions),
+        "window_k": k,
+        "early_avg_critical": early_avg,
+        "late_avg_critical": late_avg,
+        "delta_pct": delta_pct,
+    }
+
+
 def cleanup_old_reports(reports_dir: str = REPORTS_DIR, retention_days: int = RETENTION_DAYS) -> int:
     """
     Удаляет отчёты старше retention_days дней. Возвращает число удалённых.

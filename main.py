@@ -1874,6 +1874,26 @@ def _get_report_or_none(report_id: str):
     return storage.get_report(report_id)
 
 
+@app.get("/stats/{exercise}")
+async def get_stats(exercise: str, format_type: str = "individual", k: int = 3):
+    """
+    Тренд критических ошибок по данным детектора (pre/post-контроль).
+
+    Сравнивает среднее число critical-ошибок в первых k и последних k сессиях
+    по этому упражнению и формату. Возвращает None-тренд, если сессий < 2*k.
+    """
+    trend = storage.error_trend(exercise, format_type, k=k)
+    return {
+        "exercise": exercise,
+        "format": format_type,
+        "trend": trend,
+        "note": (
+            "Тренд отражает снижение срабатываний детектора ошибок. "
+            "Валидация правил против экспертизы тренера не проводилась."
+        ),
+    }
+
+
 @app.get("/reports/{report_id}/pdf")
 async def get_report_pdf(report_id: str):
     """Возвращает PDF-карточку тренировки («Сохранить отчёт»)."""

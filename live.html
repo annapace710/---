@@ -45,6 +45,7 @@
               <option value="rotation">Поворот (пируэт)</option>
               <option value="jump">Прыжок с прогибом назад</option>
               <option value="risk-buhavy">Риск с булавами</option>
+              <option value="walkover-front">Переворот вперёд</option>
           </select>
         </div>
 
@@ -128,6 +129,10 @@
       },
       jump: {
         min_backbend_tilt_deg: 35.0,
+      },
+      walkover-front: {
+        min_pass_tilt_deg: 150.0,
+        min_hands_down_y: 0.70,
       },
     };
 
@@ -221,16 +226,23 @@
         if (state.maxTilt < t.min_backbend_tilt_deg) {
           errors.push("Недостаточный прогиб: " + state.maxTilt.toFixed(0) + "°");
         }
+      } else if (exercise === "walkover-front") {
+        if (state.maxTilt !== null && state.maxTilt < t.min_pass_tilt_deg) {
+          errors.push("Проход через стойку недостаточно вертикальный: " + state.maxTilt.toFixed(0) + "° (нужно ≥ 150°)");
+        }
+        if (state.minWristY !== null && state.minWristY < t.min_hands_down_y) {
+          errors.push("Руки не опускаются до пола: нижняя точка " + state.minWristY.toFixed(2) + " (нужно ≥ 0.70)");
+        }
       }
       return errors;
     }
 
     // --- Скользящее окно метрик (~1 с) ---
     const WINDOW_MS = 1000;
-    let windowTilt = [], windowSigned = [], windowComX = [], windowStart = 0;
+    let windowTilt = [], windowSigned = [], windowComX = [], windowWristY = [], windowStart = 0;
 
     function resetWindow(now) {
-      windowTilt = []; windowSigned = []; windowComX = []; windowStart = now;
+      windowTilt = []; windowSigned = []; windowComX = []; windowWristY = []; windowStart = now;
     }
 
     // --- Цикл детекции ---
@@ -263,6 +275,7 @@
           windowTilt.push(computeTorsoTilt(lms));
           windowSigned.push(computeTorsoTiltSigned(lms));
           windowComX.push(computeComX(lms));
+          windowWristY.push(Math.min(lms[15].y, lms[16].y));
 
           const state = {
             avgTilt: windowTilt.reduce((a,b)=>a+b,0) / windowTilt.length,
@@ -271,6 +284,8 @@
             armSymmetry: computeArmSymmetry(lms),
             comXRange: windowComX.length > 1 ? Math.max(...windowComX) - Math.min(...windowComX) : null,
             supportKnee: null,
+            // Самая низкая точка запястий за окно: признак постановки рук на пол
+            minWristY: windowWristY.length ? Math.max(...windowWristY) : null,
           };
 
           // Опорная нога: ниже лодыжка — опорная; проверяем её колено
