@@ -29,6 +29,9 @@ from main import (
     _suggested_drill,
     _build_heatmap,
     _latency_stats,
+    _pause_frames,
+    _movement_start_frame,
+    detect_team_feedback,
 )
 from club_tracker import ClubTracker, analyze_club_flight, ClubTrajectory, assign_clubs_to_athletes
 
@@ -827,6 +830,68 @@ class TestHeatmap(unittest.TestCase):
             path = os.path.join(tmp, "heatmap.png")
             stats = _build_heatmap([], path)
             self.assertIsNone(stats)
+
+
+class TestTeamFeedback(unittest.TestCase):
+    """Тесты командной обратной связи (групповой формат)."""
+
+    def _track_with_com(self, com_positions):
+        """Трек-заглушка с заданной траекторией центра масс."""
+        t = AthleteTrack(index=0)
+        t.com_positions = com_positions
+        return t
+
+    def test_pause_frames_detects_stillness(self):
+        """Пауза: подряд идущие кадры с почти нулевой скоростью."""
+        com = [(0.5, 0.5)] * 4  # неподвижность
+        self.assertGreaterEqual(_pause_frames(com), 2)
+
+    def test_pause_frames_no_pause(self):
+        """Непрерывное движение — паузы нет."""
+        com = [(0.1 + i * 0.05, 0.5) for i in range(6)]
+        self.assertEqual(_pause_frames(com), 0)
+
+    def test_movement_start_frame(self):
+        """Старт движения — первый кадр, где скорость превысила порог."""
+        com = [(0.5, 0.5), (0.5, 0.5), (0.6, 0.5), (0.7, 0.5)]
+        self.assertEqual(_movement_start_frame(com), 2)
+
+    def test_team_start_desync_detected(self):
+        """Рассинхрон старта > допуска — замечание для команды."""
+        # Гимнастка 1 стартует на кадре 0, гимнастка 2 — на кадре 12 (fps=30 -> 0.4 c)
+        t1 = self._track_with_com([(0.5 + i * 0.05, 0.5) for i in range(10)])
+        t2 = self._track_with_com(
+            [(0.5, 0.5)] * 12 + [(0.5 + i * 0.05, 0.5) for i in range(5)]
+        )
+        result = detect_team_feedback([t1, t2], 30.0, None)
+        self.assertTrue(any("рассинхрон" in m["message"].lower() for m in result["messages"]))
+        self.assertEqual(result["start_spread_sec"], 0.4)
+
+    def test_team_start_sync_no_message(self):
+        """Синхронный старт — замечаний о рассинхроне нет."""
+        t1 = self._track_with_com([(0.5 + i * 0.05, 0.5) for i in range(10)])
+        t2 = self._track_with_com([(0.3 + i * 0.05, 0.5) for i in range(10)])
+        result = detect_team_feedback([t1, t2], 30.0, None)
+        self.assertFalse(any("рассинхрон" in m["message"].lower() for m in result["messages"]))
+
+    def test_team_rhythm_loss_after_drop(self):
+        """Падение булавы у одной гимнастки + паузы у остальных — командное замечание."""
+        t_moving = self._track_with_com([(0.5 + i * 0.05, 0.5) for i in range(10)])
+        t_paused = self._track_with_com([(0.5, 0.5)] * 10)
+        clubs = {"dropped": {"left": True, "right": False}}
+        result = detect_team_feedback([t_moving, t_paused, t_paused], 30.0, [clubs, None, None])
+        self.assertTrue(
+            any("теряет ритм" in m["message"].lower() for m in result["messages"])
+        )
+
+    def test_team_no_drop_no_rhythm_message(self):
+        """Без падения булавы командного замечания о ритме нет."""
+        t_moving = self._track_with_com([(0.5 + i * 0.05, 0.5) for i in range(10)])
+        clubs = {"dropped": {"left": False, "right": False}}
+        result = detect_team_feedback([t_moving], 30.0, [clubs])
+        self.assertFalse(
+            any("теряет ритм" in m["message"].lower() for m in result["messages"])
+        )
 
 
 class TestLatencyStats(unittest.TestCase):

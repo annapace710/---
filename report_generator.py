@@ -270,6 +270,29 @@ def build_report_pdf(
             c.setFillColor(colors.black)
             y -= 4 * mm
 
+    # --- Командные замечания (групповой формат) ---
+    team = analysis.get("team_feedback") or {}
+    team_messages = team.get("messages") or []
+    if team_messages and fmt == "group":
+        if y < 70 * mm:
+            c.showPage()
+            y = height - 20 * mm
+        c.setFillColor(colors.black)
+        c.setFont("Helvetica-Bold", 12)
+        c.drawString(12 * mm, y, "Командные замечания")
+        y -= 7 * mm
+        c.setFont("Helvetica", 10)
+        for msg in team_messages:
+            severity_color = (
+                colors.HexColor("#c0392b") if msg.get("severity") == "critical"
+                else colors.HexColor("#b8860b")
+            )
+            c.setFillColor(severity_color)
+            for line in _wrap_text(c, f"• {msg.get('message', '')}", "Helvetica", 10, width - 30 * mm):
+                c.drawString(16 * mm, y, line)
+                y -= 5 * mm
+        c.setFillColor(colors.black)
+
     # --- Динамика по сравнению с прошлой тренировкой ---
     if previous_meta:
         prev_analysis = previous_meta.get("analysis") or {}

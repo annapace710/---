@@ -53,6 +53,7 @@ class ClubDetection:
 class ClubTrajectory:
     """Траектория одной булавы за всё видео."""
     positions: List[Tuple[float, float]] = field(default_factory=list)  # (x, y)
+    frames: List[int] = field(default_factory=list)  # индексы кадров детекций (для командного анализа)
     peak_y: Optional[float] = None     # минимальный y (самая высокая точка)
     peak_frame: Optional[int] = None   # номер кадра, когда достигнут пик
     catch_x: Optional[float] = None    # x в момент ловли
@@ -228,6 +229,7 @@ class ClubTracker:
                         best_idx = len(trajectories) - 1
 
                 trajectories[best_idx].positions.append((det.x, det.y))
+                trajectories[best_idx].frames.append(frame_idx)
                 used.add(best_idx)
 
         # Постобработка: вычисляем пики и точку ловли для каждой траектории
@@ -270,6 +272,7 @@ def analyze_club_flight(
         "symmetry": None,
         "simultaneity": None,
         "catch_position": None,
+        "dropped": None,
     }
 
     if not trajectories:
@@ -282,6 +285,21 @@ def analyze_club_flight(
     heights["max"] = round(min(h for h in heights.values() if h is not None), 3)
     heights["min"] = round(max(h for h in heights.values() if h is not None), 3)
     result["throw_height"] = heights
+
+    # Критерий падения булавы (эвристика): траектория заканчивается у пола
+    # (последний y близок к нижней границе кадра) и после пика больше не поднимается
+    # на заметную высоту. Ловля, напротив, происходит в зоне рук (y заметно меньше 1).
+    CLUB_DROP_Y_THRESHOLD = 0.85
+    CLUB_DROP_REBOUND = 0.10
+    for side, traj in zip(["left", "right"], trajectories):
+        traj_dropped = None
+        if traj.peak_y is not None and traj.positions:
+            last_y = traj.positions[-1][1]
+            ys_after_peak = [p[1] for p in traj.positions[traj.peak_frame:]]
+            min_after_peak = min(ys_after_peak) if ys_after_peak else last_y
+            rebound = traj.peak_y - min_after_peak  # насколько после пика снова поднималась
+            traj_dropped = last_y >= CLUB_DROP_Y_THRESHOLD and rebound <= CLUB_DROP_REBOUND
+        result.setdefault("dropped", {})[side] = traj_dropped
 
     if len(trajectories) >= 2:
         left, right = trajectories[0], trajectories[1]

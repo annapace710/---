@@ -342,11 +342,31 @@ function renderAnalysis(data) {
       </div>`;
   }
 
+  // Командные замечания (групповой формат)
+  let teamHtml = "";
+  const teamFeedback = analysis.team_feedback || {};
+  const teamMessages = teamFeedback.messages || [];
+  if (format === "group" && teamMessages.length > 0) {
+    const teamItems = teamMessages.map((msg) => {
+      const severityLabel = msg.severity === "critical" ? "🔴" : "🟡";
+      return `<li class="error-item error-${msg.severity}">
+        <span class="error-severity">${severityLabel}</span>
+        <span class="error-text">${msg.message}</span>
+      </li>`;
+    }).join("");
+    teamHtml = `
+      <div class="feedback-block">
+        <h3>🤝 Командные замечания</h3>
+        <ul class="error-list">${teamItems}</ul>
+      </div>`;
+  }
+
   resultContent.innerHTML = `
     <div class="metrics-grid">${baseCards}</div>
     <div class="movement-block">${movementHtml}</div>
     ${athletesHtml}
     ${feedbackHtml}
+    ${teamHtml}
   `;
 }
 
