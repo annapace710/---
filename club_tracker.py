@@ -272,7 +272,7 @@ def analyze_club_flight(
         "symmetry": None,
         "simultaneity": None,
         "catch_position": None,
-        "dropped": None,
+        "dropped": {},
     }
 
     if not trajectories:
@@ -291,6 +291,7 @@ def analyze_club_flight(
     # на заметную высоту. Ловля, напротив, происходит в зоне рук (y заметно меньше 1).
     CLUB_DROP_Y_THRESHOLD = 0.85
     CLUB_DROP_REBOUND = 0.10
+    result["dropped"] = {}
     for side, traj in zip(["left", "right"], trajectories):
         traj_dropped = None
         if traj.peak_y is not None and traj.positions:
@@ -299,7 +300,7 @@ def analyze_club_flight(
             min_after_peak = min(ys_after_peak) if ys_after_peak else last_y
             rebound = traj.peak_y - min_after_peak  # насколько после пика снова поднималась
             traj_dropped = last_y >= CLUB_DROP_Y_THRESHOLD and rebound <= CLUB_DROP_REBOUND
-        result.setdefault("dropped", {})[side] = traj_dropped
+        result["dropped"][side] = traj_dropped
 
     if len(trajectories) >= 2:
         left, right = trajectories[0], trajectories[1]
